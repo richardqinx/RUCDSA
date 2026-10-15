@@ -4,6 +4,7 @@
 #include "ui.h"
 
 #include "polynomial.h"
+#include "expression.h"
 #include "tui.h"
 
 #include <ctype.h>
@@ -16,6 +17,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #define STYLE_RESET     "\033[0m"
 #define STYLE_BOLD      "\033[1m"
@@ -25,8 +28,6 @@
 #define COLOR_GREEN     "\033[1;32m"
 #define COLOR_RED       "\033[1;31m"
 #define COLOR_YELLOW    "\033[1;33m"
-
-#define UI_LINE_WIDTH   50
 
 enum ui_vector_result_kind {
     UI_VECTOR_RESULT_NONE,
@@ -52,6 +53,11 @@ struct ui_state {
     struct poly_list poly_list_b;
     struct poly_list poly_list_result;
     bool poly_list_result_valid;
+
+    struct expression_context expression;
+    char expression_text[256];
+    double expression_result;
+    bool expression_result_valid;
 
     char status[256];
 };
@@ -95,6 +101,24 @@ static size_t ui_str_display_width(const char *str)
     return width;
 }
 
+static int ui_terminal_width(void)
+{
+    struct winsize size;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0) {
+        return size.ws_col;
+    }
+    return 50;
+}
+
+static void ui_print_rule(char character)
+{
+    int width = ui_terminal_width();
+    for (int i = 0; i < width; ++i) {
+        putchar(character);
+    }
+    putchar('\n');
+}
+
 static void ui_print_centered(const char *text, int width)
 {
     size_t disp_w = ui_str_display_width(text);
@@ -107,17 +131,23 @@ static void ui_print_centered(const char *text, int width)
 
 static void ui_print_header(const char *title)
 {
-    printf(COLOR_CYAN "==================================================" STYLE_RESET "\n");
+    int width = ui_terminal_width();
+    printf(COLOR_CYAN);
+    ui_print_rule('=');
     printf(STYLE_BOLD);
-    ui_print_centered(title, UI_LINE_WIDTH);
+    ui_print_centered(title, width);
     printf(STYLE_RESET);
-    printf(COLOR_CYAN "==================================================" STYLE_RESET "\n\n");
+    printf(COLOR_CYAN);
+    ui_print_rule('=');
+    printf(STYLE_RESET "\n");
 }
 
 static void ui_print_status(const struct ui_state *state)
 {
     if (state->status[0] != '\0') {
-        printf("\n" STYLE_DIM "──────────────────────────────────────────────────" STYLE_RESET "\n");
+        printf("\n" STYLE_DIM);
+        ui_print_rule('-');
+        printf(STYLE_RESET);
         if (strncmp(state->status, "错误", 6) == 0) {
             printf(COLOR_RED "  [!] %s" STYLE_RESET "\n", state->status);
         } else if (strncmp(state->status, "已取消", 9) == 0) {
@@ -130,7 +160,9 @@ static void ui_print_status(const struct ui_state *state)
 
 static void ui_print_footer(const char *text)
 {
-    printf("\n" STYLE_DIM "──────────────────────────────────────────────────" STYLE_RESET "\n");
+    printf("\n" STYLE_DIM);
+    ui_print_rule('-');
+    printf(STYLE_RESET);
     printf(STYLE_DIM "  %s" STYLE_RESET "\n", text);
 }
 
@@ -141,15 +173,15 @@ static void ui_print_menu(const char *const *items,
 {
     for (size_t i = 0; i < count; ++i) {
         if (i == selected) {
-            printf(STYLE_SELECTED "  > %zu. %-32s " STYLE_RESET "\n", i + 1, items[i]);
+            printf(STYLE_SELECTED "  > %zu. %s " STYLE_RESET "\n", i + 1, items[i]);
         } else {
-            printf("    %zu. %-32s\n", i + 1, items[i]);
+            printf("    %zu. %s\n", i + 1, items[i]);
         }
     }
     if (selected == count) {
-        printf(STYLE_SELECTED "  > 0. %-32s " STYLE_RESET "\n", zero_item);
+        printf(STYLE_SELECTED "  > 0. %s " STYLE_RESET "\n", zero_item);
     } else {
-        printf(STYLE_DIM "    0. %-32s" STYLE_RESET "\n", zero_item);
+        printf(STYLE_DIM "    0. %s" STYLE_RESET "\n", zero_item);
     }
 }
 
@@ -505,6 +537,7 @@ static bool ui_state_init(struct ui_state *state)
     poly_list_init(&state->poly_list_a);
     poly_list_init(&state->poly_list_b);
     poly_list_init(&state->poly_list_result);
+    expression_init(&state->expression);
 
     int linear_values[] = { 10, 20, 30, 40 };
     double vector_a_values[] = { 1.0, 2.0, 3.0 };
@@ -552,6 +585,7 @@ static void ui_state_destroy(struct ui_state *state)
     poly_list_destroy(&state->poly_list_a);
     poly_list_destroy(&state->poly_list_b);
     poly_list_destroy(&state->poly_list_result);
+    expression_destroy(&state->expression);
 }
 
 static void ui_draw_linear(const struct ui_state *state, size_t selected)
@@ -1298,6 +1332,143 @@ static void ui_poly_list_page(struct ui_state *state)
     }
 }
 
+static const char *ui_expression_error_text(enum expression_error_code code)
+{
+    switch (code) {
+    case EXPRESSION_SYNTAX_ERROR: return "表达式语法错误";
+    case EXPRESSION_PAREN_ERROR: return "括号不匹配";
+    case EXPRESSION_UNKNOWN_VARIABLE: return "变量不存在";
+    case EXPRESSION_UNSET_VARIABLE: return "变量尚未赋值";
+    case EXPRESSION_DIVISION_BY_ZERO: return "除数不能为零";
+    default: return "表达式错误";
+    }
+}
+
+static void ui_draw_expression(const struct ui_state *state, size_t selected)
+{
+    static const char *const items[] = {
+        "输入新表达式",
+        "修改变量值",
+        "计算表达式",
+    };
+
+    tui_clear();
+    ui_print_header("表达式计算");
+    printf(COLOR_CYAN "当前表达式：" STYLE_RESET "\n  %s\n\n",
+           state->expression_text[0] ? state->expression_text : "（未输入）");
+    printf(COLOR_CYAN "变量表：" STYLE_RESET "\n");
+    if (state->expression.variables.size == 0) {
+        printf("  （无变量）\n");
+    }
+    for (size_t i = 0; i < state->expression.variables.size; ++i) {
+        const struct expression_variable *v =
+            vec_at_const(&state->expression.variables, i);
+        if (v->assigned) printf("  %s = %g\n", v->name, v->value);
+        else printf("  %s = （未赋值）\n", v->name);
+    }
+    printf("\n" COLOR_CYAN "计算结果：" STYLE_RESET "\n");
+    if (state->expression_result_valid) printf("  %g\n", state->expression_result);
+    else printf("  （未计算）\n");
+    ui_print_menu(items, 3, selected, "返回");
+    ui_print_status(state);
+    ui_print_footer("↑/↓ 或 j/k 选择    Enter 确认    q/Esc 返回");
+    fflush(stdout);
+}
+
+static void ui_expression_input(struct ui_state *state)
+{
+    char input[sizeof(state->expression_text)];
+    if (!ui_prompt_inline("输入新表达式", "例如：3+4*X2-2*(20-5*2)",
+                          input, sizeof(input))) return;
+    struct expression_error error;
+    if (!expression_collect_variables(&state->expression, input, &error)) {
+        ui_set_status(state, "错误：%s（位置 %zu）",
+                      ui_expression_error_text(error.code), error.position);
+        return;
+    }
+    strcpy(state->expression_text, input);
+    state->expression_result_valid = false;
+    ui_set_status(state, "已更新表达式");
+}
+
+static void ui_expression_set_variable(struct ui_state *state)
+{
+    char name[EXPRESSION_NAME_MAX];
+    char input[64];
+    if (state->expression.variables.size == 0) {
+        ui_set_status(state, "当前表达式没有变量");
+        return;
+    }
+    if (!ui_prompt_inline("修改变量值", "输入变量名：", name, sizeof(name))) return;
+    struct expression_variable *variable = expression_variable(&state->expression, name);
+    if (!variable) {
+        ui_set_status(state, "错误：变量不存在");
+        return;
+    }
+    if (!ui_prompt_inline("修改变量值", "输入新值：", input, sizeof(input))) return;
+    char *end;
+    errno = 0;
+    double value = strtod(input, &end);
+    if (end == input || errno == ERANGE || *ui_skip_space(end) != '\0') {
+        ui_set_status(state, "错误：数值格式无效");
+        return;
+    }
+    variable->value = value;
+    variable->assigned = true;
+    state->expression_result_valid = false;
+    ui_set_status(state, "已更新变量 %s", name);
+}
+
+static void ui_expression_calculate(struct ui_state *state)
+{
+    if (state->expression_text[0] == '\0') {
+        ui_set_status(state, "错误：请先输入表达式");
+        return;
+    }
+    struct expression_error error;
+    if (!expression_eval(&state->expression, state->expression_text,
+                         &state->expression_result, &error)) {
+        state->expression_result_valid = false;
+        ui_set_status(state, "错误：%s（位置 %zu）",
+                      ui_expression_error_text(error.code), error.position);
+        return;
+    }
+    state->expression_result_valid = true;
+    ui_set_status(state, "计算完成");
+}
+
+static void ui_expression_action(struct ui_state *state, int choice)
+{
+    switch (choice) {
+    case 0:
+        ui_expression_input(state);
+        break;
+    case 1:
+        ui_expression_set_variable(state);
+        break;
+    case 2:
+        ui_expression_calculate(state);
+        break;
+    default:
+        break;
+    }
+}
+
+static void ui_expression_page(struct ui_state *state)
+{
+    size_t selected = 0;
+    for (;;) {
+        ui_draw_expression(state, selected);
+        int choice = ui_menu_input(&selected, 3);
+        if (choice == -1) {
+            return;
+        }
+        if (choice >= 0) {
+            ui_expression_action(state, choice);
+        }
+    }
+}
+
 static void ui_draw_main(const struct ui_state *state, size_t selected)
 {
     static const char *const items[] = {
@@ -1305,15 +1476,19 @@ static void ui_draw_main(const struct ui_state *state, size_t selected)
         "向量运算",
         "顺序表多项式",
         "链表多项式",
+        "表达式计算",
     };
 
     (void)state;
     tui_clear();
-    printf(COLOR_CYAN "==================================================" STYLE_RESET "\n");
+    printf(COLOR_CYAN);
+    ui_print_rule('=');
     printf(STYLE_BOLD);
-    ui_print_centered("简单计算器", UI_LINE_WIDTH);
+    ui_print_centered("简单计算器", ui_terminal_width());
     printf(STYLE_RESET);
-    printf(COLOR_CYAN "==================================================" STYLE_RESET "\n\n");
+    printf(COLOR_CYAN);
+    ui_print_rule('=');
+    printf(STYLE_RESET "\n");
     ui_print_menu(items, sizeof(items) / sizeof(items[0]), selected, "退出");
     ui_print_footer("↑/↓ 或 j/k 选择    Enter 确认    q 退出");
     fflush(stdout);
@@ -1337,7 +1512,7 @@ int ui_run(void)
     size_t selected = 0;
     for (;;) {
         ui_draw_main(&state, selected);
-        int choice = ui_menu_input(&selected, 4);
+        int choice = ui_menu_input(&selected, 5);
         if (choice == -1) {
             break;
         }
@@ -1353,6 +1528,9 @@ int ui_run(void)
             break;
         case 3:
             ui_poly_list_page(&state);
+            break;
+        case 4:
+            ui_expression_page(&state);
             break;
         default:
             break;

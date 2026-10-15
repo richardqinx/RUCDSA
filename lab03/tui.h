@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Copyright (C) 2026 Richard Qin */
 
-#ifndef LAB02_TUI_H
-#define LAB02_TUI_H
+#ifndef TUI_H
+#define TUI_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -35,4 +35,4 @@ struct tui_event tui_read_key(void);
 bool tui_read_line(const char *prompt, char *buffer, size_t capacity);
 void tui_wait(void);
 
-#endif /* LAB02_TUI_H */
+#endif /* TUI_H */
