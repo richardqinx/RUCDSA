@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "vec.h"
+#include "stack.h"
 
 #define EXPRESSION_NAME_MAX 64
 
@@ -146,138 +146,174 @@ static inline bool expression_collect_variables(struct expression_context *ctx,
     return true;
 }
 
-struct expression_parser {
-    const char *text;
+/** @brief An operator and its byte offset in the expression. */
+struct expression_operator {
+    char symbol;
     size_t position;
-    const struct expression_context *ctx;
-    struct expression_error *error;
 };
 
-static inline void expression_skip(struct expression_parser *p)
+/** @brief Returns precedence; `p` and `n` denote unary plus and minus. */
+static inline int expression_precedence(char symbol)
 {
-    while (isspace((unsigned char)p->text[p->position])) {
-        ++p->position;
+    switch (symbol) {
+    case 'p': case 'n': return 3;
+    case '*': case '/': return 2;
+    case '+': case '-': return 1;
+    default: return 0;
     }
 }
 
-static inline bool expression_parse_sum(struct expression_parser *, double *);
-
-static inline bool expression_parse_primary(struct expression_parser *p,
-                                            double *out)
+/** @brief Applies the top operator to the value stack. */
+static inline bool expression_apply(stack *values, stack *operators,
+                                     struct expression_error *error)
 {
-    expression_skip(p);
-    size_t start = p->position;
-    char c = p->text[start];
-    if (c == '(') {
-        ++p->position;
-        if (!expression_parse_sum(p, out)) return false;
-        expression_skip(p);
-        if (p->text[p->position] != ')') {
-            expression_error(p->error, EXPRESSION_PAREN_ERROR, p->position);
-            return false;
-        }
-        ++p->position;
+    struct expression_operator op = *stack_top_as(operators, struct expression_operator);
+    stack_pop(operators);
+    bool unary = op.symbol == 'p' || op.symbol == 'n';
+    if (stack_size(values) < (unary ? 1u : 2u)) {
+        expression_error(error, EXPRESSION_SYNTAX_ERROR, op.position);
+        return false;
+    }
+    if (unary) {
+        if (op.symbol == 'n') *stack_top_as(values, double) *= -1;
         return true;
     }
-    if (isdigit((unsigned char)c) || c == '.') {
-        char *end;
-        errno = 0;
-        *out = strtod(p->text + start, &end);
-        if (end == p->text + start || errno == ERANGE) {
-            expression_error(p->error, EXPRESSION_SYNTAX_ERROR, start);
+    double rhs = *stack_top_as(values, double);
+    stack_pop(values);
+    double *lhs = stack_top_as(values, double);
+    switch (op.symbol) {
+    case '+': *lhs += rhs; break;
+    case '-': *lhs -= rhs; break;
+    case '*': *lhs *= rhs; break;
+    case '/':
+        if (rhs == 0.0) {
+            expression_error(error, EXPRESSION_DIVISION_BY_ZERO, op.position);
             return false;
         }
-        p->position = (size_t)(end - p->text);
-        return true;
+        *lhs /= rhs;
+        break;
     }
-    if (expression_name_start((unsigned char)c)) {
-        char name[EXPRESSION_NAME_MAX];
-        size_t length;
-        ++p->position;
-        while (expression_name_char((unsigned char)p->text[p->position])) ++p->position;
-        length = p->position - start;
-        if (length >= sizeof(name)) {
-            expression_error(p->error, EXPRESSION_SYNTAX_ERROR, start);
-            return false;
-        }
-        memcpy(name, p->text + start, length);
-        name[length] = '\0';
-        const struct expression_variable *v =
-            expression_variable((struct expression_context *)p->ctx, name);
-        if (!v) expression_error(p->error, EXPRESSION_UNKNOWN_VARIABLE, start);
-        else if (!v->assigned) expression_error(p->error, EXPRESSION_UNSET_VARIABLE, start);
-        else *out = v->value;
-        return v && v->assigned;
-    }
-    expression_error(p->error, EXPRESSION_SYNTAX_ERROR, start);
-    return false;
+    return true;
 }
 
-static inline bool expression_parse_unary(struct expression_parser *p, double *out)
-{
-    expression_skip(p);
-    char c = p->text[p->position];
-    if (c == '+' || c == '-') {
-        ++p->position;
-        if (!expression_parse_unary(p, out)) return false;
-        if (c == '-') *out = -*out;
-        return true;
-    }
-    return expression_parse_primary(p, out);
-}
-
-static inline bool expression_parse_product(struct expression_parser *p, double *out)
-{
-    if (!expression_parse_unary(p, out)) return false;
-    for (;;) {
-        expression_skip(p);
-        char op = p->text[p->position];
-        if (op != '*' && op != '/') return true;
-        ++p->position;
-        double rhs;
-        if (!expression_parse_unary(p, &rhs)) return false;
-        if (op == '/') {
-            if (rhs == 0.0) {
-                expression_error(p->error, EXPRESSION_DIVISION_BY_ZERO, p->position);
-                return false;
-            }
-            *out /= rhs;
-        } else *out *= rhs;
-    }
-}
-
-static inline bool expression_parse_sum(struct expression_parser *p, double *out)
-{
-    if (!expression_parse_product(p, out)) return false;
-    for (;;) {
-        expression_skip(p);
-        char op = p->text[p->position];
-        if (op != '+' && op != '-') return true;
-        ++p->position;
-        double rhs;
-        if (!expression_parse_product(p, &rhs)) return false;
-        if (op == '+') *out += rhs;
-        else *out -= rhs;
-    }
-}
-
+/**
+ * @brief Evaluates an expression using value and operator stacks.
+ * @param ctx The variable table used for name lookup.
+ * @param text The null-terminated expression.
+ * @param result Receives the value on success; unchanged on failure.
+ * @param error Receives the error code and byte offset, or may be null.
+ * @return `true` on success; otherwise `false`.
+ * @pre `ctx` is initialized; `text` and `result` are valid pointers.
+ */
 static inline bool expression_eval(const struct expression_context *ctx,
                                    const char *text,
                                    double *result,
                                    struct expression_error *error)
 {
-    struct expression_parser p = { text, 0, ctx, error };
-    if (!expression_parse_sum(&p, result)) return false;
-    expression_skip(&p);
-    if (p.text[p.position]) {
-        expression_error(error,
-                         p.text[p.position] == ')' ? EXPRESSION_PAREN_ERROR
-                                                    : EXPRESSION_SYNTAX_ERROR,
-                         p.position);
-        return false;
+    STACK(values, double);
+    STACK(operators, struct expression_operator);
+    bool expect_operand = true;
+    bool success = false;
+    size_t position = 0;
+
+    while (text[position]) {
+        unsigned char c = (unsigned char)text[position];
+        if (isspace(c)) {
+            ++position;
+            continue;
+        }
+        if (isdigit(c) || c == '.' || expression_name_start(c)) {
+            if (!expect_operand) goto syntax_error;
+            double value;
+            if (expression_name_start(c)) {
+                size_t start = position++;
+                while (expression_name_char((unsigned char)text[position])) ++position;
+                size_t length = position - start;
+                if (length >= EXPRESSION_NAME_MAX) {
+                    position = start;
+                    goto syntax_error;
+                }
+                const struct expression_variable *variable = NULL;
+                for (size_t i = 0; i < ctx->variables.size; ++i) {
+                    const struct expression_variable *v = vec_at_const(&ctx->variables, i);
+                    if (strlen(v->name) == length &&
+                        strncmp(v->name, text + start, length) == 0) {
+                        variable = v;
+                        break;
+                    }
+                }
+                if (!variable || !variable->assigned) {
+                    expression_error(error, variable ? EXPRESSION_UNSET_VARIABLE
+                                                     : EXPRESSION_UNKNOWN_VARIABLE, start);
+                    goto done;
+                }
+                value = variable->value;
+            } else {
+                char *end;
+                errno = 0;
+                value = strtod(text + position, &end);
+                if (end == text + position || errno == ERANGE) goto syntax_error;
+                position = (size_t)(end - text);
+            }
+            if (!stack_push(&values, &value)) goto syntax_error;
+            expect_operand = false;
+            continue;
+        }
+        struct expression_operator op = { .symbol = (char)c, .position = position };
+        if (c == '(') {
+            if (!expect_operand) goto syntax_error;
+        } else if (c == ')') {
+            if (expect_operand) goto syntax_error;
+            while (!stack_empty(&operators) &&
+                   stack_top_as(&operators, struct expression_operator)->symbol != '(') {
+                if (!expression_apply(&values, &operators, error)) goto done;
+            }
+            if (stack_empty(&operators)) goto paren_error;
+            stack_pop(&operators);
+            ++position;
+            continue;
+        } else if (c == '+' || c == '-' || c == '*' || c == '/') {
+            if (expect_operand) {
+                if (c != '+' && c != '-') goto syntax_error;
+                op.symbol = c == '+' ? 'p' : 'n';
+            } else {
+                while (!stack_empty(&operators) &&
+                       expression_precedence(stack_top_as(&operators,
+                           struct expression_operator)->symbol) >= expression_precedence(op.symbol)) {
+                    if (!expression_apply(&values, &operators, error)) goto done;
+                }
+            }
+        } else {
+            goto syntax_error;
+        }
+        if (!stack_push(&operators, &op)) goto syntax_error;
+        expect_operand = true;
+        ++position;
     }
+    if (expect_operand) goto syntax_error;
+    while (!stack_empty(&operators)) {
+        struct expression_operator op = *stack_top_as(&operators, struct expression_operator);
+        if (op.symbol == '(') {
+            position = op.position;
+            goto paren_error;
+        }
+        if (!expression_apply(&values, &operators, error)) goto done;
+    }
+    if (stack_size(&values) != 1) goto syntax_error;
+    *result = *stack_top_as(&values, double);
     expression_error(error, EXPRESSION_OK, 0);
-    return true;
+    success = true;
+    goto done;
+
+syntax_error:
+    expression_error(error, EXPRESSION_SYNTAX_ERROR, position);
+    goto done;
+paren_error:
+    expression_error(error, EXPRESSION_PAREN_ERROR, position);
+done:
+    stack_destroy(&values);
+    stack_destroy(&operators);
+    return success;
 }
 
 #endif /* EXPRESSION_H */
