@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 Richard Qin */
 
 #include "container_of.h"
+#include "expression.h"
 #include "list.h"
 #include "polynomial.h"
 #include "vec.h"
@@ -354,6 +355,98 @@ static bool test_poly_list_arithmetic_and_alias(void)
     return true;
 }
 
+static bool test_expression_nested_precedence_and_variables(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_collect_variables(&context,
+        "-(A + 2.5) * (B - (-C + 4)) / 2", &error));
+    CHECK(context.variables.size == 3);
+    CHECK(expression_set_variable(&context, "A", 3.0));
+    CHECK(expression_set_variable(&context, "B", 10.0));
+    CHECK(expression_set_variable(&context, "C", 2.0));
+    CHECK(expression_eval(&context,
+        "-(A + 2.5) * (B - (-C + 4)) / 2", &result, &error));
+    CHECK(fabs(result + 22.0) < 1e-12);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_variable_dedup_and_update(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_collect_variables(&context,
+        "A1 + A1 * B2 - (B2 / 2) + C", &error));
+    CHECK(context.variables.size == 3);
+    CHECK(expression_set_variable(&context, "A1", 4.0));
+    CHECK(expression_set_variable(&context, "B2", 6.0));
+    CHECK(expression_set_variable(&context, "C", 1.0));
+    CHECK(expression_eval(&context,
+        "A1 + A1 * B2 - (B2 / 2) + C", &result, &error));
+    CHECK(fabs(result - 26.0) < 1e-12);
+    CHECK(expression_set_variable(&context, "B2", 10.0));
+    CHECK(expression_eval(&context,
+        "A1 + A1 * B2 - (B2 / 2) + C", &result, &error));
+    CHECK(result == 40.0);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_unary_and_decimal_values(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_collect_variables(&context,
+        "--5 + -(+2.5) * (3 - -1) + .5", &error));
+    CHECK(expression_eval(&context,
+        "--5 + -(+2.5) * (3 - -1) + .5", &result, &error));
+    CHECK(fabs(result + 4.5) < 1e-12);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_deep_parentheses_and_associativity(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_collect_variables(&context,
+        "1 - 2 - 3 + 4 * (5 + (6 - (7 - 8)))", &error));
+    CHECK(expression_eval(&context,
+        "1 - 2 - 3 + 4 * (5 + (6 - (7 - 8)))", &result, &error));
+    CHECK(fabs(result - 44.0) < 1e-12);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_error_paths(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_collect_variables(&context, "X + 1", &error));
+    CHECK(!expression_eval(&context, "X + 1", &result, &error));
+    CHECK(error.code == EXPRESSION_UNSET_VARIABLE);
+    CHECK(expression_set_variable(&context, "X", 2.0));
+    CHECK(!expression_eval(&context, "X / (3 - 3)", &result, &error));
+    CHECK(error.code == EXPRESSION_DIVISION_BY_ZERO);
+    CHECK(!expression_eval(&context, "X + (2 * 3", &result, &error));
+    CHECK(error.code == EXPRESSION_PAREN_ERROR);
+    CHECK(!expression_collect_variables(&context, "X @ 2", &error));
+    CHECK(error.code == EXPRESSION_SYNTAX_ERROR);
+    expression_destroy(&context);
+    return true;
+}
+
 struct test_case {
     const char *name;
     bool (*function)(void);
@@ -375,11 +468,21 @@ int main(void)
           test_poly_list_normalization_and_conversion },
         { "poly_list arithmetic and alias",
           test_poly_list_arithmetic_and_alias },
+        { "expression nested precedence and variables",
+          test_expression_nested_precedence_and_variables },
+        { "expression variable dedup and update",
+          test_expression_variable_dedup_and_update },
+        { "expression unary and decimal values",
+          test_expression_unary_and_decimal_values },
+        { "expression deep parentheses and associativity",
+          test_expression_deep_parentheses_and_associativity },
+        { "expression error paths", test_expression_error_paths },
     };
     size_t failures = 0;
 
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-        printf("[%zu/10] %s\n", i + 1, tests[i].name);
+        printf("[%zu/%zu] %s\n", i + 1,
+               sizeof(tests) / sizeof(tests[0]), tests[i].name);
         if (tests[i].function()) {
             puts("  passed");
         } else {
@@ -387,7 +490,8 @@ int main(void)
             puts("  failed");
         }
     }
-    printf("\n%zu/10 tests passed\n",
-           sizeof(tests) / sizeof(tests[0]) - failures);
+    printf("\n%zu/%zu tests passed\n",
+           sizeof(tests) / sizeof(tests[0]) - failures,
+           sizeof(tests) / sizeof(tests[0]));
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

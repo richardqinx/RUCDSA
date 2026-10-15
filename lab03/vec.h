@@ -24,12 +24,12 @@
  * `data` points to storage for at most `capacity` elements.  The first
  * `size` positions contain valid elements.
  */
-struct vec {
+typedef struct vec {
     void *data;
     size_t size;
     size_t capacity;
     size_t elem_size;
-};
+} vec;
 
 /**
  * @brief Compares two elements.
