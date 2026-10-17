@@ -5,6 +5,7 @@
 
 #include "polynomial.h"
 #include "expression.h"
+#include "matrix.h"
 #include "tui.h"
 
 #include <ctype.h>
@@ -35,6 +36,13 @@ enum ui_vector_result_kind {
     UI_VECTOR_RESULT_COSINE,
 };
 
+enum ui_matrix_result_kind {
+    UI_MATRIX_RESULT_NONE,
+    UI_MATRIX_RESULT_VALUE,
+    UI_MATRIX_RESULT_DETERMINANT,
+    UI_MATRIX_RESULT_EIGENVALUES,
+};
+
 struct ui_state {
     struct vec linear;
 
@@ -43,6 +51,13 @@ struct ui_state {
     struct vec vector_result;
     enum ui_vector_result_kind vector_result_kind;
     double vector_cosine;
+
+    struct matrix matrix_a;
+    struct matrix matrix_b;
+    struct matrix matrix_result;
+    struct vec matrix_eigenvalues;
+    enum ui_matrix_result_kind matrix_result_kind;
+    double matrix_determinant;
 
     struct poly_vec poly_vec_a;
     struct poly_vec poly_vec_b;
@@ -531,6 +546,10 @@ static bool ui_state_init(struct ui_state *state)
     vec_init(&state->vector_a, double);
     vec_init(&state->vector_b, double);
     vec_init(&state->vector_result, double);
+    matrix_init(&state->matrix_a);
+    matrix_init(&state->matrix_b);
+    matrix_init(&state->matrix_result);
+    vec_init(&state->matrix_eigenvalues, struct matrix_eigenvalue);
     poly_vec_init(&state->poly_vec_a);
     poly_vec_init(&state->poly_vec_b);
     poly_vec_init(&state->poly_vec_result);
@@ -579,6 +598,10 @@ static void ui_state_destroy(struct ui_state *state)
     vec_destroy(&state->vector_a);
     vec_destroy(&state->vector_b);
     vec_destroy(&state->vector_result);
+    matrix_destroy(&state->matrix_a);
+    matrix_destroy(&state->matrix_b);
+    matrix_destroy(&state->matrix_result);
+    vec_destroy(&state->matrix_eigenvalues);
     poly_vec_destroy(&state->poly_vec_a);
     poly_vec_destroy(&state->poly_vec_b);
     poly_vec_destroy(&state->poly_vec_result);
@@ -960,6 +983,225 @@ static void ui_vector_page(struct ui_state *state)
         if (choice >= 0) {
             ui_vector_action(state, choice);
         }
+    }
+}
+
+static void ui_print_matrix(const struct matrix *matrix)
+{
+    if (matrix->rows == 0) {
+        printf("（未输入）\n");
+        return;
+    }
+    printf("%zu × %zu\n", matrix->rows, matrix->cols);
+    for (size_t row = 0; row < matrix->rows; ++row) {
+        printf("  [");
+        for (size_t col = 0; col < matrix->cols; ++col) {
+            printf(" %12.6g", *matrix_at_const(matrix, row, col));
+        }
+        printf(" ]\n");
+    }
+}
+
+static void ui_draw_matrix(const struct ui_state *state, size_t selected)
+{
+    static const char *const items[] = {
+        "输入矩阵 A",
+        "输入矩阵 B",
+        "A + B",
+        "A - B",
+        "A × B",
+        "转置矩阵",
+        "计算行列式",
+        "计算特征值",
+    };
+
+    tui_clear();
+    ui_print_header("矩阵运算");
+    printf(COLOR_CYAN "A = " STYLE_RESET);
+    ui_print_matrix(&state->matrix_a);
+    printf(COLOR_CYAN "B = " STYLE_RESET);
+    ui_print_matrix(&state->matrix_b);
+    putchar('\n');
+    ui_print_menu(items, sizeof(items) / sizeof(items[0]), selected, "返回");
+
+    switch (state->matrix_result_kind) {
+    case UI_MATRIX_RESULT_VALUE:
+        printf("\n" COLOR_GREEN "结果：" STYLE_RESET);
+        ui_print_matrix(&state->matrix_result);
+        break;
+    case UI_MATRIX_RESULT_DETERMINANT:
+        printf("\n" COLOR_GREEN "行列式 = %.12g" STYLE_RESET "\n",
+               state->matrix_determinant);
+        break;
+    case UI_MATRIX_RESULT_EIGENVALUES:
+        printf("\n" COLOR_GREEN "特征值：" STYLE_RESET "\n");
+        for (size_t i = 0; i < state->matrix_eigenvalues.size; ++i) {
+            const struct matrix_eigenvalue *value =
+                vec_at_const(&state->matrix_eigenvalues, i);
+            printf("  λ%zu = %.12g", i + 1, value->real);
+            if (value->imag != 0.0) printf("%+.12gi", value->imag);
+            putchar('\n');
+        }
+        break;
+    case UI_MATRIX_RESULT_NONE:
+        break;
+    }
+    ui_print_status(state);
+    ui_print_footer("↑/↓ 或 j/k 选择    Enter 确认    q/Esc 返回");
+    fflush(stdout);
+}
+
+static void ui_matrix_input(struct matrix *destination, const char *name,
+                            struct ui_state *state)
+{
+    size_t rows, cols;
+    if (!ui_read_size_value(name, "行数（正整数）：", &rows, state) ||
+        !ui_read_size_value(name, "列数（正整数）：", &cols, state)) {
+        return;
+    }
+    if (rows == 0 || cols == 0) {
+        ui_set_status(state, "错误：矩阵行数和列数必须为正整数");
+        return;
+    }
+
+    struct matrix temporary;
+    matrix_init(&temporary);
+    if (!matrix_resize(&temporary, rows, cols)) {
+        ui_set_status(state, "错误：矩阵尺寸过大或内存分配失败");
+        return;
+    }
+    VEC(row, double);
+    for (size_t i = 0; i < rows; ++i) {
+        char input[512];
+        char description[128];
+        snprintf(description, sizeof(description),
+                 "第 %zu/%zu 行：输入 %zu 个实数，以空格分隔", i + 1, rows, cols);
+        if (!ui_prompt_inline(name, description, input, sizeof(input))) {
+            ui_set_status(state, "已取消");
+            goto done;
+        }
+        if (!ui_parse_vector(input, &row) || row.size != cols) {
+            ui_set_status(state, "错误：每行必须输入 %zu 个实数", cols);
+            goto done;
+        }
+        for (size_t j = 0; j < cols; ++j) {
+            double value = *(const double *)vec_at_const(&row, j);
+            if (!isfinite(value)) {
+                ui_set_status(state, "错误：矩阵元素必须是有限实数");
+                goto done;
+            }
+            *matrix_at(&temporary, i, j) = value;
+        }
+    }
+    struct matrix old = *destination;
+    *destination = temporary;
+    temporary = old;
+    ui_set_status(state, "已更新%s", name);
+done:
+    vec_destroy(&row);
+    matrix_destroy(&temporary);
+}
+
+static void ui_matrix_binary(struct ui_state *state, char operation)
+{
+    const struct matrix *a = &state->matrix_a;
+    const struct matrix *b = &state->matrix_b;
+    if (a->rows == 0 || b->rows == 0) {
+        ui_set_status(state, "错误：请先输入矩阵 A 和 B");
+        return;
+    }
+    if (operation == '*' ? a->cols != b->rows :
+        (a->rows != b->rows || a->cols != b->cols)) {
+        ui_set_status(state, operation == '*' ?
+                      "错误：A 的列数必须等于 B 的行数" :
+                      "错误：两个矩阵的行数和列数必须相同");
+        return;
+    }
+    bool success;
+    switch (operation) {
+    case '+': success = matrix_add(&state->matrix_result, a, b); break;
+    case '-': success = matrix_sub(&state->matrix_result, a, b); break;
+    default: success = matrix_mul(&state->matrix_result, a, b); break;
+    }
+    if (!success) {
+        ui_set_status(state, "错误：结果尺寸过大或内存分配失败");
+        return;
+    }
+    state->matrix_result_kind = UI_MATRIX_RESULT_VALUE;
+    ui_set_status(state, "已计算 A %c B", operation);
+}
+
+static void ui_matrix_unary(struct ui_state *state, int choice)
+{
+    const char *title = choice == 5 ? "转置矩阵" :
+                        choice == 6 ? "计算行列式" : "计算特征值";
+    size_t selected;
+    if (!ui_read_size_value(title, "选择矩阵：1 = A，2 = B", &selected, state)) {
+        return;
+    }
+    if (selected != 1 && selected != 2) {
+        ui_set_status(state, "错误：请输入 1 或 2");
+        return;
+    }
+    const struct matrix *matrix = selected == 1 ? &state->matrix_a : &state->matrix_b;
+    if (matrix->rows == 0) {
+        ui_set_status(state, "错误：请先输入所选矩阵");
+        return;
+    }
+    if (choice != 5 && matrix->rows != matrix->cols) {
+        ui_set_status(state, "错误：行列式和特征值计算要求方阵");
+        return;
+    }
+    bool success;
+    enum ui_matrix_result_kind kind;
+    switch (choice) {
+    case 5:
+        success = matrix_transpose(&state->matrix_result, matrix);
+        kind = UI_MATRIX_RESULT_VALUE;
+        break;
+    case 6:
+        success = matrix_det(matrix, &state->matrix_determinant);
+        kind = UI_MATRIX_RESULT_DETERMINANT;
+        break;
+    default:
+        success = matrix_eigenvalues(matrix, &state->matrix_eigenvalues);
+        kind = UI_MATRIX_RESULT_EIGENVALUES;
+        break;
+    }
+    if (!success) {
+        ui_set_status(state, choice == 7 ?
+                      "错误：特征值计算失败（内存不足或迭代未收敛）" :
+                      "错误：结果尺寸过大或内存分配失败");
+        return;
+    }
+    state->matrix_result_kind = kind;
+    ui_set_status(state, "%s完成（矩阵 %c）", title, selected == 1 ? 'A' : 'B');
+}
+
+static void ui_matrix_action(struct ui_state *state, int choice)
+{
+    ui_clear_status(state);
+    state->matrix_result_kind = UI_MATRIX_RESULT_NONE;
+    switch (choice) {
+    case 0: ui_matrix_input(&state->matrix_a, "矩阵 A", state); break;
+    case 1: ui_matrix_input(&state->matrix_b, "矩阵 B", state); break;
+    case 2: ui_matrix_binary(state, '+'); break;
+    case 3: ui_matrix_binary(state, '-'); break;
+    case 4: ui_matrix_binary(state, '*'); break;
+    case 5:
+    case 6:
+    case 7: ui_matrix_unary(state, choice); break;
+    }
+}
+
+static void ui_matrix_page(struct ui_state *state)
+{
+    size_t selected = 0;
+    for (;;) {
+        ui_draw_matrix(state, selected);
+        int choice = ui_menu_input(&selected, 8);
+        if (choice == -1) return;
+        if (choice >= 0) ui_matrix_action(state, choice);
     }
 }
 
@@ -1563,6 +1805,7 @@ static void ui_draw_main(const struct ui_state *state, size_t selected)
         "顺序表多项式",
         "链表多项式",
         "表达式计算",
+        "矩阵运算",
     };
 
     (void)state;
@@ -1598,7 +1841,7 @@ int ui_run(void)
     size_t selected = 0;
     for (;;) {
         ui_draw_main(&state, selected);
-        int choice = ui_menu_input(&selected, 5);
+        int choice = ui_menu_input(&selected, 6);
         if (choice == -1) {
             break;
         }
@@ -1617,6 +1860,9 @@ int ui_run(void)
             break;
         case 4:
             ui_expression_page(&state);
+            break;
+        case 5:
+            ui_matrix_page(&state);
             break;
         default:
             break;

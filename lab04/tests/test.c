@@ -4,6 +4,7 @@
 #include "container_of.h"
 #include "expression.h"
 #include "list.h"
+#include "matrix.h"
 #include "polynomial.h"
 #include "vec.h"
 
@@ -750,6 +751,269 @@ static bool test_expression_conditional_and_call_errors(void)
     return true;
 }
 
+static bool test_matrix_storage(void)
+{
+    struct matrix a, b;
+    matrix_init(&a);
+    matrix_init(&b);
+    CHECK(a.rows == 0 && a.cols == 0 && a.elements.size == 0);
+    double data[] = { 1, 2, 3, 4, 5, 6 };
+    CHECK(matrix_assign(&a, 2, 3, data));
+    CHECK(a.rows == 2 && a.cols == 3 && a.elements.size == 6);
+    CHECK(*matrix_at_const(&a, 1, 2) == 6);
+    CHECK(matrix_assign(&a, 2, 3, a.elements.data));
+    CHECK(matrix_copy(&b, &a));
+    *matrix_at(&b, 1, 2) = 9;
+    CHECK(*matrix_at_const(&a, 1, 2) == 6);
+    CHECK(matrix_copy(&b, &b));
+    CHECK(*matrix_at_const(&b, 1, 2) == 9);
+    CHECK(matrix_resize(&a, 3, 3));
+    CHECK(memcmp(a.elements.data, data, sizeof(data)) == 0);
+    for (size_t i = 6; i < 9; ++i) CHECK(((double *)a.elements.data)[i] == 0);
+    CHECK(matrix_resize(&a, 1, 2));
+    CHECK(a.rows == 1 && a.cols == 2 && a.elements.size == 2);
+    CHECK(*matrix_at_const(&a, 0, 1) == 2);
+    matrix_destroy(&a);
+    CHECK(a.rows == 0 && a.cols == 0 && a.elements.data == NULL);
+    matrix_init(&a);
+    CHECK(matrix_copy(&b, &a));
+    CHECK(b.rows == 0 && b.cols == 0 && b.elements.size == 0);
+    matrix_destroy(&a);
+    matrix_destroy(&b);
+    return true;
+}
+
+static bool test_matrix_add_sub_and_alias(void)
+{
+    struct matrix a, b, result;
+    matrix_init(&a);
+    matrix_init(&b);
+    matrix_init(&result);
+    double left[] = { 1, 2, 3, 4, 5, 6 };
+    double right[] = { 6, 5, 4, 3, 2, 1 };
+    double sum[] = { 7, 7, 7, 7, 7, 7 };
+    double difference[] = { -5, -3, -1, 1, 3, 5 };
+    CHECK(matrix_assign(&a, 2, 3, left));
+    CHECK(matrix_assign(&b, 2, 3, right));
+    CHECK(matrix_add(&result, &a, &b));
+    CHECK(result.rows == 2 && result.cols == 3);
+    CHECK(memcmp(result.elements.data, sum, sizeof(sum)) == 0);
+    CHECK(matrix_sub(&result, &a, &b));
+    CHECK(memcmp(result.elements.data, difference, sizeof(difference)) == 0);
+    CHECK(memcmp(a.elements.data, left, sizeof(left)) == 0);
+    CHECK(memcmp(b.elements.data, right, sizeof(right)) == 0);
+    CHECK(matrix_add(&a, &a, &b));
+    CHECK(memcmp(a.elements.data, sum, sizeof(sum)) == 0);
+    CHECK(matrix_sub(&b, &a, &b));
+    CHECK(memcmp(b.elements.data, left, sizeof(left)) == 0);
+    CHECK(matrix_sub(&a, &a, &a));
+    for (size_t i = 0; i < a.elements.size; ++i) {
+        CHECK(((double *)a.elements.data)[i] == 0);
+    }
+    matrix_destroy(&a);
+    matrix_destroy(&b);
+    matrix_destroy(&result);
+    return true;
+}
+
+static bool test_matrix_multiply_and_alias(void)
+{
+    struct matrix a, b, result;
+    matrix_init(&a);
+    matrix_init(&b);
+    matrix_init(&result);
+    double left[] = { 1, 2, 3, 4, 5, 6 };
+    double right[] = { 7, 8, 9, 10, 11, 12 };
+    double product[] = { 58, 64, 139, 154 };
+    CHECK(matrix_assign(&a, 2, 3, left));
+    CHECK(matrix_assign(&b, 3, 2, right));
+    CHECK(matrix_mul(&result, &a, &b));
+    CHECK(result.rows == 2 && result.cols == 2);
+    CHECK(memcmp(result.elements.data, product, sizeof(product)) == 0);
+    CHECK(memcmp(a.elements.data, left, sizeof(left)) == 0);
+    CHECK(memcmp(b.elements.data, right, sizeof(right)) == 0);
+    CHECK(matrix_mul(&a, &a, &b));
+    CHECK(a.rows == 2 && a.cols == 2);
+    CHECK(memcmp(a.elements.data, product, sizeof(product)) == 0);
+    CHECK(matrix_assign(&a, 2, 3, left));
+    CHECK(matrix_mul(&b, &a, &b));
+    CHECK(b.rows == 2 && b.cols == 2);
+    CHECK(memcmp(b.elements.data, product, sizeof(product)) == 0);
+    double square[] = { 1, 2, 3, 4 };
+    double squared[] = { 7, 10, 15, 22 };
+    CHECK(matrix_assign(&a, 2, 2, square));
+    CHECK(matrix_mul(&a, &a, &a));
+    CHECK(memcmp(a.elements.data, squared, sizeof(squared)) == 0);
+    matrix_destroy(&a);
+    matrix_destroy(&b);
+    matrix_destroy(&result);
+    return true;
+}
+
+static bool test_matrix_transpose(void)
+{
+    struct matrix a, result;
+    matrix_init(&a);
+    matrix_init(&result);
+    double data[] = { 1, 2, 3, 4, 5, 6 };
+    double transposed[] = { 1, 4, 2, 5, 3, 6 };
+    CHECK(matrix_assign(&a, 2, 3, data));
+    CHECK(matrix_transpose(&result, &a));
+    CHECK(result.rows == 3 && result.cols == 2);
+    CHECK(memcmp(result.elements.data, transposed, sizeof(transposed)) == 0);
+    CHECK(memcmp(a.elements.data, data, sizeof(data)) == 0);
+    CHECK(matrix_transpose(&a, &a));
+    CHECK(a.rows == 3 && a.cols == 2);
+    CHECK(memcmp(a.elements.data, transposed, sizeof(transposed)) == 0);
+    CHECK(matrix_transpose(&a, &a));
+    CHECK(a.rows == 2 && a.cols == 3);
+    CHECK(memcmp(a.elements.data, data, sizeof(data)) == 0);
+    CHECK(matrix_assign(&a, 1, 6, data));
+    CHECK(matrix_transpose(&a, &a));
+    CHECK(a.rows == 6 && a.cols == 1);
+    CHECK(memcmp(a.elements.data, data, sizeof(data)) == 0);
+    matrix_destroy(&a);
+    matrix_destroy(&result);
+    return true;
+}
+
+static bool test_matrix_determinant(void)
+{
+    struct matrix matrix;
+    matrix_init(&matrix);
+    const struct {
+        size_t size;
+        double data[9];
+        double expected;
+    } cases[] = {
+        { 1, { -7 }, -7 },
+        { 2, { 0, 2, 3, 4 }, -6 },
+        { 2, { 1, 2, 2, 4 }, 0 },
+        { 2, { 0, 0, 0, 0 }, 0 },
+        { 3, { 6, 1, 1, 4, -2, 5, 2, 8, 7 }, -306 },
+        { 2, { 0, 1e200, 1e-200, 0 }, -1 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        size_t n = cases[i].size;
+        double result = 123;
+        CHECK(matrix_assign(&matrix, n, n, cases[i].data));
+        CHECK(matrix_det(&matrix, &result));
+        CHECK(fabs(result - cases[i].expected) < 1e-12);
+        CHECK(memcmp(matrix.elements.data, cases[i].data, n * n * sizeof(double)) == 0);
+    }
+    matrix_destroy(&matrix);
+    return true;
+}
+
+static bool test_matrix_eigenvalues(void)
+{
+    struct matrix matrix;
+    matrix_init(&matrix);
+    VEC(values, struct matrix_eigenvalue);
+    const struct {
+        size_t size;
+        double data[16];
+        struct matrix_eigenvalue expected[4];
+        double tolerance;
+    } cases[] = {
+        { 1, { -3 }, { { -3, 0 } }, 1e-12 },
+        { 2, { 2, 1, 1, 2 }, { { 1, 0 }, { 3, 0 } }, 1e-12 },
+        { 2, { 0, -1, 1, 0 }, { { 0, 1 }, { 0, -1 } }, 1e-12 },
+        { 2, { 0, 0, 0, 0 }, { { 0, 0 }, { 0, 0 } }, 1e-12 },
+        { 3, { 0, 0, 6, 1, 0, -11, 0, 1, 6 },
+          { { 1, 0 }, { 2, 0 }, { 3, 0 } }, 1e-10 },
+        { 3, { 0, 0, 2, 1, 0, -1, 0, 1, 2 },
+          { { 2, 0 }, { 0, 1 }, { 0, -1 } }, 1e-10 },
+        { 3, { 2, 4, -1, 0, -3, 2, 0, 0, 5 },
+          { { 2, 0 }, { -3, 0 }, { 5, 0 } }, 1e-12 },
+        { 3, { 2, 0, 0, 0, 2, 0, 0, 0, -1 },
+          { { 2, 0 }, { 2, 0 }, { -1, 0 } }, 1e-12 },
+        /* Similar to diag(6, 18) combined with [0, -12; 12, 0]. */
+        { 4, { 9, 17, -5, 1, 3, 9, -9, 3, -21, 27, -3, 15, -3, 15, -3, 9 },
+          { { 6, 0 }, { 18, 0 }, { 0, 12 }, { 0, -12 } }, 1e-10 },
+        /* Similar to diag(6, 12, 18, 24). */
+        { 4, { 21, -7, 7, -11, -3, 17, 1, 1, 12, -8, 26, -16, 12, -8, 8, -4 },
+          { { 6, 0 }, { 12, 0 }, { 18, 0 }, { 24, 0 } }, 1e-10 },
+        { 2, { 0, -1e-200, 1e-200, 0 },
+          { { 0, 1e-200 }, { 0, -1e-200 } }, 1e-212 },
+        { 2, { 0, -1e200, 1e200, 0 },
+          { { 0, 1e200 }, { 0, -1e200 } }, 1e188 },
+        { 2, { 1, 1e300, 1e-300, 1 }, { { 0, 0 }, { 2, 0 } }, 1e-12 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        size_t n = cases[i].size;
+        CHECK(matrix_assign(&matrix, n, n, cases[i].data));
+        CHECK(matrix_eigenvalues(&matrix, &values));
+        CHECK(values.size == n);
+        bool matched[4] = { false };
+        for (size_t j = 0; j < n; ++j) {
+            bool found = false;
+            const struct matrix_eigenvalue *value = vec_at_const(&values, j);
+            for (size_t k = 0; k < n; ++k) {
+                if (!matched[k] &&
+                    fabs(value->real - cases[i].expected[k].real) < cases[i].tolerance &&
+                    fabs(value->imag - cases[i].expected[k].imag) < cases[i].tolerance) {
+                    matched[k] = true;
+                    found = true;
+                    break;
+                }
+            }
+            CHECK(found);
+        }
+        CHECK(memcmp(matrix.elements.data, cases[i].data, n * n * sizeof(double)) == 0);
+    }
+    matrix_destroy(&matrix);
+    vec_destroy(&values);
+    return true;
+}
+
+static bool test_matrix_error_outputs(void)
+{
+    struct matrix a, b, output, empty;
+    matrix_init(&a);
+    matrix_init(&b);
+    matrix_init(&output);
+    matrix_init(&empty);
+    double data[] = { 1, 2, 3, 4, 5, 6 };
+    double sentinel[] = { 91, 92 };
+    CHECK(matrix_assign(&a, 2, 3, data));
+    CHECK(matrix_assign(&b, 2, 2, data));
+    CHECK(matrix_assign(&output, 1, 2, sentinel));
+    CHECK(!matrix_resize(&a, 0, 2));
+    CHECK(!matrix_resize(&a, 2, 0));
+    CHECK(!matrix_resize(&a, SIZE_MAX, 2));
+    CHECK(!matrix_resize(&a, SIZE_MAX / sizeof(double) + 1, 1));
+    CHECK(!matrix_assign(&a, 0, 2, data));
+    CHECK(a.rows == 2 && a.cols == 3);
+    CHECK(memcmp(a.elements.data, data, sizeof(data)) == 0);
+    CHECK(!matrix_add(&output, &a, &b));
+    CHECK(!matrix_sub(&output, &a, &b));
+    CHECK(!matrix_mul(&output, &a, &b));
+    CHECK(!matrix_transpose(&output, &empty));
+    CHECK(!matrix_add(&output, &empty, &empty));
+    CHECK(!matrix_mul(&output, &empty, &empty));
+    CHECK(output.rows == 1 && output.cols == 2);
+    CHECK(memcmp(output.elements.data, sentinel, sizeof(sentinel)) == 0);
+    double determinant = 123;
+    CHECK(!matrix_det(&a, &determinant));
+    CHECK(!matrix_det(&empty, &determinant));
+    CHECK(determinant == 123);
+    VEC(values, struct matrix_eigenvalue);
+    struct matrix_eigenvalue root = { 4, 5 };
+    CHECK(vec_push_back(&values, &root));
+    CHECK(!matrix_eigenvalues(&a, &values));
+    CHECK(!matrix_eigenvalues(&empty, &values));
+    CHECK(values.size == 1);
+    const struct matrix_eigenvalue *retained = vec_at_const(&values, 0);
+    CHECK(retained->real == 4 && retained->imag == 5);
+    matrix_destroy(&a);
+    matrix_destroy(&b);
+    matrix_destroy(&output);
+    matrix_destroy(&empty);
+    vec_destroy(&values);
+    return true;
+}
+
 struct test_case {
     const char *name;
     bool (*function)(void);
@@ -792,6 +1056,13 @@ int main(void)
         { "expression definition errors", test_expression_definition_errors },
         { "expression conditional and call errors",
           test_expression_conditional_and_call_errors },
+        { "matrix storage", test_matrix_storage },
+        { "matrix add, sub and alias", test_matrix_add_sub_and_alias },
+        { "matrix multiply and alias", test_matrix_multiply_and_alias },
+        { "matrix transpose", test_matrix_transpose },
+        { "matrix determinant", test_matrix_determinant },
+        { "matrix eigenvalues", test_matrix_eigenvalues },
+        { "matrix error outputs", test_matrix_error_outputs },
     };
     size_t failures = 0;
 
