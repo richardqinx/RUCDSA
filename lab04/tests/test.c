@@ -447,6 +447,309 @@ static bool test_expression_error_paths(void)
     return true;
 }
 
+static bool test_expression_power_precedence(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    const struct {
+        const char *text;
+        double expected;
+    } cases[] = {
+        { "2^3^2", 512.0 },
+        { "-2^2", -4.0 },
+        { "(-2)^2", 4.0 },
+        { "2^-2", 0.25 },
+        { "2^-2^2", 0.0625 },
+        { "--2^2", 4.0 },
+        { "2^--2", 4.0 },
+        { "-2^-2", -0.25 },
+        { "2^-2*3", 0.75 },
+        { "1+2*3^2", 19.0 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(expression_eval(&context, cases[i].text, &result, &error));
+        CHECK(fabs(result - cases[i].expected) < 1e-12);
+    }
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_scientific_literals_and_variables(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    const struct {
+        const char *text;
+        double expected;
+    } cases[] = {
+        { "1.14e2", 114.0 },
+        { "-1.14e2", -114.0 },
+        { "2E+1+.5", 20.5 },
+        { "1e-3+5e-1", 0.501 },
+        { "1.+.5", 1.5 },
+        { "+2.5e-2", 0.025 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(expression_collect_variables(&context, cases[i].text, &error));
+        CHECK(context.variables.size == 0);
+        CHECK(expression_eval(&context, cases[i].text, &result, &error));
+        CHECK(fabs(result - cases[i].expected) < 1e-12);
+    }
+    CHECK(expression_collect_variables(&context, "1.14e2+X2*X2-_value", &error));
+    CHECK(context.variables.size == 2);
+    CHECK(expression_set_variable(&context, "X2", 3.0));
+    CHECK(expression_set_variable(&context, "_value", 2.0));
+    CHECK(expression_eval(&context, "1.14e2+X2*X2-_value", &result, &error));
+    CHECK(result == 121.0);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_comparisons(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    const struct {
+        const char *text;
+        double expected;
+    } cases[] = {
+        { "1<2", 1.0 }, { "2<1", 0.0 },
+        { "1<=1", 1.0 }, { "2<=1", 0.0 },
+        { "2>1", 1.0 }, { "1>2", 0.0 },
+        { "2>=2", 1.0 }, { "1>=2", 0.0 },
+        { "2==2", 1.0 }, { "1==2", 0.0 },
+        { "1!=2", 1.0 }, { "2!=2", 0.0 },
+        { "1+2*3>=7", 1.0 },
+        { "2^3>2*3+1", 1.0 },
+        { "1<2==1", 1.0 },
+        { "1==2<3", 1.0 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(expression_eval(&context, cases[i].text, &result, &error));
+        CHECK(result == cases[i].expected);
+    }
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_conditional_nesting(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    const struct {
+        const char *text;
+        double expected;
+    } cases[] = {
+        { "0?8:9", 9.0 },
+        { "-2?8:9", 8.0 },
+        { "3<4?10:20", 10.0 },
+        { "1?0:1?2:3", 0.0 },
+        { "1?0?2:3:4", 3.0 },
+        { "0?1?2:3:4", 4.0 },
+        { "0?2:1?3:4", 3.0 },
+        { "(1?2:3)?4:5", 4.0 },
+        { "2*(1?3:4)+5", 11.0 },
+        { "(0?1:1?2:3)*4", 8.0 },
+        { "2^(1?2:3)", 4.0 },
+        { "(-1?2:3)^2", 4.0 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(expression_eval(&context, cases[i].text, &result, &error));
+        CHECK(result == cases[i].expected);
+    }
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_conditional_short_circuit(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_collect_variables(&context, "X+1", &error));
+    const char *cases[] = {
+        "0?1/0:7",
+        "1?7:1/0",
+        "0?X:7",
+        "1?7:X",
+        "0?missing(1):7",
+        "1?7:missing(1)",
+        "1?(0?1/0:6)+1:1/0",
+        "0?missing(X):(1?7:1/0)",
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(expression_eval(&context, cases[i], &result, &error));
+        CHECK(result == 7.0);
+    }
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_function_calls(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_define(&context, "DEF f(X2)=3+4*X2;", &error));
+    CHECK(expression_define(&context, "DEF g(x)=3+4*f(x);", &error));
+    const struct {
+        const char *text;
+        double expected;
+    } cases[] = {
+        { "f(5)", 23.0 },
+        { "g(5)", 95.0 },
+        { "f(2+3)", 23.0 },
+        { "f(f(1))", 31.0 },
+        { "f(g(1))", 127.0 },
+        { "-f(1)^2", -49.0 },
+        { "f(1?5:1/0)", 23.0 },
+        { "f(1?2:1/0)+g(0?1/0:1)", 42.0 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(expression_eval(&context, cases[i].text, &result, &error));
+        CHECK(result == cases[i].expected);
+    }
+    CHECK(expression_collect_variables(&context, "f(X2)+f(X2)", &error));
+    CHECK(context.variables.size == 1);
+    CHECK(expression_set_variable(&context, "X2", 5.0));
+    CHECK(expression_eval(&context, "f(X2)+f(X2)", &result, &error));
+    CHECK(result == 46.0);
+    CHECK(expression_eval(&context, "X2", &result, &error));
+    CHECK(result == 5.0);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_recursive_calls(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_define(&context, "DEF fact(n)=n<=1?1:n*fact(n-1);", &error));
+    CHECK(expression_eval(&context, "fact(0)", &result, &error));
+    CHECK(result == 1.0);
+    CHECK(expression_eval(&context, "fact(5)", &result, &error));
+    CHECK(result == 120.0);
+    CHECK(expression_define(&context, "DEF fib(n)=n<=1?n:fib(n-1)+fib(n-2);", &error));
+    CHECK(expression_eval(&context, "fib(10)", &result, &error));
+    CHECK(result == 55.0);
+    CHECK(expression_define(&context, "DEF even(n)=n==0?1:odd(n-1);", &error));
+    CHECK(expression_define(&context, "DEF odd(n)=n==0?0:even(n-1);", &error));
+    CHECK(expression_eval(&context, "even(8)+odd(9)", &result, &error));
+    CHECK(result == 2.0);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_function_history(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    double result;
+    expression_init(&context);
+    CHECK(expression_define(&context, "DEF f(X2)=3+4*X2;", &error));
+    CHECK(expression_define(&context, "DEF fact(n)=n<=1?1:n*fact(n-1);", &error));
+    CHECK(expression_define(&context, "DEF f(X2)=100+X2;", &error));
+    CHECK(expression_define(&context, "DEF fact(n)=100+n;", &error));
+    CHECK(context.functions.size == 4);
+    CHECK(expression_eval(&context, "f(5)", &result, &error));
+    CHECK(result == 105.0);
+    CHECK(expression_eval(&context, "fact(5)", &result, &error));
+    CHECK(result == 105.0);
+    CHECK(expression_call(&context, 0, 5.0, &result, &error));
+    CHECK(result == 23.0);
+    CHECK(expression_call(&context, 1, 5.0, &result, &error));
+    CHECK(result == 120.0);
+    CHECK(expression_call(&context, 2, 5.0, &result, &error));
+    CHECK(result == 105.0);
+    CHECK(expression_call(&context, 3, 5.0, &result, &error));
+    CHECK(result == 105.0);
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_definition_errors(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    expression_init(&context);
+    CHECK(expression_define(&context, "DEF f(x)=x+1;", &error));
+    const struct {
+        const char *text;
+        enum expression_error_code expected;
+    } cases[] = {
+        { "", EXPRESSION_SYNTAX_ERROR },
+        { "DEF", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f()=1;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF 2f(x)=x;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f(1)=1;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f(x,y)=x;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f(x) x;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f(x)=;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f(x)=x@2;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f(x)=1e999;", EXPRESSION_SYNTAX_ERROR },
+        { "DEF f(x)=x+y;", EXPRESSION_UNKNOWN_VARIABLE },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(!expression_define(&context, cases[i].text, &error));
+        CHECK(error.code == cases[i].expected);
+        CHECK(context.functions.size == 1);
+    }
+    expression_destroy(&context);
+    return true;
+}
+
+static bool test_expression_conditional_and_call_errors(void)
+{
+    struct expression_context context;
+    struct expression_error error;
+    expression_init(&context);
+    CHECK(expression_define(&context, "DEF f(x)=x+1;", &error));
+    const struct {
+        const char *text;
+        enum expression_error_code expected;
+    } cases[] = {
+        { "missing(1)", EXPRESSION_UNKNOWN_FUNCTION },
+        { "f(Y)", EXPRESSION_UNKNOWN_VARIABLE },
+        { "f()", EXPRESSION_SYNTAX_ERROR },
+        { "f(1,2)", EXPRESSION_SYNTAX_ERROR },
+        { "f(1", EXPRESSION_PAREN_ERROR },
+        { "1?", EXPRESSION_SYNTAX_ERROR },
+        { "1?:2", EXPRESSION_SYNTAX_ERROR },
+        { "0?1:", EXPRESSION_SYNTAX_ERROR },
+        { "1?2:3:4", EXPRESSION_SYNTAX_ERROR },
+        { "1:2", EXPRESSION_SYNTAX_ERROR },
+        { "1<", EXPRESSION_SYNTAX_ERROR },
+        { "1<=", EXPRESSION_SYNTAX_ERROR },
+        { "1=1", EXPRESSION_SYNTAX_ERROR },
+        { "1!1", EXPRESSION_SYNTAX_ERROR },
+        { "1?(2:3", EXPRESSION_PAREN_ERROR },
+        { "1?2:3?4", EXPRESSION_SYNTAX_ERROR },
+        { "0?1?2:3", EXPRESSION_SYNTAX_ERROR },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        double result = 123.0;
+        CHECK(!expression_eval(&context, cases[i].text, &result, &error));
+        CHECK(error.code == cases[i].expected);
+        CHECK(result == 123.0);
+    }
+    /* The last case is missing the colon for the outer question mark. */
+    CHECK(error.position == 1);
+    expression_destroy(&context);
+    return true;
+}
+
 struct test_case {
     const char *name;
     bool (*function)(void);
@@ -477,6 +780,18 @@ int main(void)
         { "expression deep parentheses and associativity",
           test_expression_deep_parentheses_and_associativity },
         { "expression error paths", test_expression_error_paths },
+        { "expression power precedence", test_expression_power_precedence },
+        { "expression scientific literals and variables",
+          test_expression_scientific_literals_and_variables },
+        { "expression comparisons", test_expression_comparisons },
+        { "expression conditional nesting", test_expression_conditional_nesting },
+        { "expression conditional short circuit", test_expression_conditional_short_circuit },
+        { "expression function calls", test_expression_function_calls },
+        { "expression recursive calls", test_expression_recursive_calls },
+        { "expression function history", test_expression_function_history },
+        { "expression definition errors", test_expression_definition_errors },
+        { "expression conditional and call errors",
+          test_expression_conditional_and_call_errors },
     };
     size_t failures = 0;
 

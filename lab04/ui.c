@@ -55,7 +55,7 @@ struct ui_state {
     bool poly_list_result_valid;
 
     struct expression_context expression;
-    char expression_text[256];
+    char expression_text[EXPRESSION_TEXT_MAX];
     double expression_result;
     bool expression_result_valid;
 
@@ -1340,6 +1340,7 @@ static const char *ui_expression_error_text(enum expression_error_code code)
     case EXPRESSION_UNKNOWN_VARIABLE: return "变量不存在";
     case EXPRESSION_UNSET_VARIABLE: return "变量尚未赋值";
     case EXPRESSION_DIVISION_BY_ZERO: return "除数不能为零";
+    case EXPRESSION_UNKNOWN_FUNCTION: return "函数不存在";
     default: return "表达式错误";
     }
 }
@@ -1347,9 +1348,10 @@ static const char *ui_expression_error_text(enum expression_error_code code)
 static void ui_draw_expression(const struct ui_state *state, size_t selected)
 {
     static const char *const items[] = {
-        "输入新表达式",
+        "输入表达式或 DEF/RUN 命令",
         "修改变量值",
         "计算表达式",
+        "查看并运行历史函数",
     };
 
     tui_clear();
@@ -1369,18 +1371,43 @@ static void ui_draw_expression(const struct ui_state *state, size_t selected)
     printf("\n" COLOR_CYAN "计算结果：" STYLE_RESET "\n");
     if (state->expression_result_valid) printf("  %g\n", state->expression_result);
     else printf("  （未计算）\n");
-    ui_print_menu(items, 3, selected, "返回");
+    ui_print_menu(items, 4, selected, "返回");
     ui_print_status(state);
     ui_print_footer("↑/↓ 或 j/k 选择    Enter 确认    q/Esc 返回");
     fflush(stdout);
 }
 
+static void ui_expression_calculate(struct ui_state *state);
+
 static void ui_expression_input(struct ui_state *state)
 {
     char input[sizeof(state->expression_text)];
-    if (!ui_prompt_inline("输入新表达式", "例如：3+4*X2-2*(20-5*2)",
+    if (!ui_prompt_inline("输入表达式或命令",
+                          "例如：X2^2 或 DEF f(x)=x<=1?1:x*f(x-1); 或 RUN f(5);",
                           input, sizeof(input))) return;
     struct expression_error error;
+    const char *text = ui_skip_space(input);
+    if (strncmp(text, "DEF", 3) == 0 &&
+        !expression_name_char((unsigned char)text[3])) {
+        if (!expression_define(&state->expression, text, &error)) {
+            ui_set_status(state, "错误：%s（位置 %zu）",
+                          ui_expression_error_text(error.code), error.position);
+            return;
+        }
+        const struct expression_function *function =
+            vec_back_const(&state->expression.functions);
+        ui_set_status(state, "已定义函数 %s(%s)，历史记录 %zu",
+                      function->name, function->parameter, state->expression.functions.size);
+        return;
+    }
+    bool run = strncmp(text, "RUN", 3) == 0 &&
+               !expression_name_char((unsigned char)text[3]);
+    if (run) text = ui_skip_space(text + 3);
+    size_t length = strlen(text);
+    while (length > 0 && isspace((unsigned char)text[length - 1])) --length;
+    if (length > 0 && text[length - 1] == ';') --length;
+    memmove(input, text, length);
+    input[length] = '\0';
     if (!expression_collect_variables(&state->expression, input, &error)) {
         ui_set_status(state, "错误：%s（位置 %zu）",
                       ui_expression_error_text(error.code), error.position);
@@ -1389,6 +1416,7 @@ static void ui_expression_input(struct ui_state *state)
     strcpy(state->expression_text, input);
     state->expression_result_valid = false;
     ui_set_status(state, "已更新表达式");
+    if (run) ui_expression_calculate(state);
 }
 
 static void ui_expression_set_variable(struct ui_state *state)
@@ -1429,12 +1457,67 @@ static void ui_expression_calculate(struct ui_state *state)
     if (!expression_eval(&state->expression, state->expression_text,
                          &state->expression_result, &error)) {
         state->expression_result_valid = false;
+        if (error.code == EXPRESSION_UNKNOWN_FUNCTION) {
+            state->expression_text[0] = '\0';
+            vec_clear(&state->expression.variables);
+        }
         ui_set_status(state, "错误：%s（位置 %zu）",
                       ui_expression_error_text(error.code), error.position);
         return;
     }
     state->expression_result_valid = true;
     ui_set_status(state, "计算完成");
+}
+
+static void ui_expression_history(struct ui_state *state)
+{
+    if (state->expression.functions.size == 0) {
+        ui_set_status(state, "尚未定义函数");
+        return;
+    }
+    ui_clear_status(state);
+    for (;;) {
+        tui_clear();
+        ui_print_header("函数定义历史");
+        for (size_t i = 0; i < state->expression.functions.size; ++i) {
+            const struct expression_function *function =
+                vec_at_const(&state->expression.functions, i);
+            printf("%zu. %s(%s) = %s\n", i + 1,
+                   function->name, function->parameter, function->body);
+        }
+        ui_print_status(state);
+        ui_print_footer("输入记录序号运行历史函数    Esc 返回");
+        size_t choice;
+        if (!ui_read_size_value("运行历史函数", "记录序号：", &choice, state)) return;
+        if (choice == 0 || choice > state->expression.functions.size) {
+            ui_set_status(state, "错误：记录序号超出范围");
+            continue;
+        }
+        const struct expression_function *function =
+            vec_at_const(&state->expression.functions, choice - 1);
+        char input[64];
+        char description[128];
+        snprintf(description, sizeof(description), "输入形参 %s 的值：", function->parameter);
+        if (!ui_prompt_inline("运行历史函数", description, input, sizeof(input))) return;
+        char *end;
+        errno = 0;
+        double argument = strtod(input, &end);
+        if (end == input || errno == ERANGE || *ui_skip_space(end) != '\0') {
+            ui_set_status(state, "错误：数值格式无效");
+            continue;
+        }
+        double result;
+        struct expression_error error;
+        if (!expression_call(&state->expression, choice - 1, argument, &result, &error)) {
+            ui_set_status(state, "错误：%s（位置 %zu）",
+                          ui_expression_error_text(error.code), error.position);
+            continue;
+        }
+        printf("\n" COLOR_GREEN "历史记录 %zu：%s(%g) = %g" STYLE_RESET "\n",
+               choice, function->name, argument, result);
+        tui_wait();
+        ui_clear_status(state);
+    }
 }
 
 static void ui_expression_action(struct ui_state *state, int choice)
@@ -1449,6 +1532,9 @@ static void ui_expression_action(struct ui_state *state, int choice)
     case 2:
         ui_expression_calculate(state);
         break;
+    case 3:
+        ui_expression_history(state);
+        break;
     default:
         break;
     }
@@ -1459,7 +1545,7 @@ static void ui_expression_page(struct ui_state *state)
     size_t selected = 0;
     for (;;) {
         ui_draw_expression(state, selected);
-        int choice = ui_menu_input(&selected, 3);
+        int choice = ui_menu_input(&selected, 4);
         if (choice == -1) {
             return;
         }
