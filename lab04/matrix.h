@@ -161,6 +161,82 @@ static inline bool matrix_transpose(struct matrix *dst, const struct matrix *src
     return true;
 }
 
+/* Gauss-Jordan elimination with partial pivoting. A singular matrix has no
+ * inverse. The destination is unchanged when the input is invalid, singular,
+ * or allocation fails; the destination may alias the source.
+ */
+static inline bool matrix_inverse(struct matrix *dst, const struct matrix *src)
+{
+    if (src->rows == 0 || src->rows != src->cols) return false;
+    size_t n = src->rows;
+    if (n > SIZE_MAX / 2) return false;
+    size_t width = n * 2;
+    if (n > SIZE_MAX / width) return false;
+
+    VEC(work, long double);
+    if (!vec_resize(&work, n * width)) return false;
+    long double *augmented = work.data;
+    const double *source = src->elements.data;
+    for (size_t row = 0; row < n; ++row) {
+        for (size_t col = 0; col < n; ++col) {
+            augmented[row * width + col] = source[row * n + col];
+            augmented[row * width + n + col] = row == col ? 1.0L : 0.0L;
+        }
+    }
+
+    for (size_t k = 0; k < n; ++k) {
+        size_t pivot = k;
+        for (size_t row = k + 1; row < n; ++row) {
+            if (fabsl(augmented[row * width + k]) >
+                fabsl(augmented[pivot * width + k])) {
+                pivot = row;
+            }
+        }
+        if (augmented[pivot * width + k] == 0.0L) {
+            vec_destroy(&work);
+            return false;
+        }
+        if (pivot != k) {
+            for (size_t col = 0; col < width; ++col) {
+                long double value = augmented[k * width + col];
+                augmented[k * width + col] = augmented[pivot * width + col];
+                augmented[pivot * width + col] = value;
+            }
+        }
+
+        long double diagonal = augmented[k * width + k];
+        for (size_t col = 0; col < width; ++col) {
+            augmented[k * width + col] /= diagonal;
+        }
+        for (size_t row = 0; row < n; ++row) {
+            if (row == k) continue;
+            long double factor = augmented[row * width + k];
+            if (factor == 0.0L) continue;
+            augmented[row * width + k] = 0.0L;
+            for (size_t col = k + 1; col < width; ++col) {
+                augmented[row * width + col] -=
+                    factor * augmented[k * width + col];
+            }
+        }
+    }
+
+    struct matrix temporary;
+    matrix_init(&temporary);
+    if (!matrix_resize(&temporary, n, n)) {
+        vec_destroy(&work);
+        return false;
+    }
+    double *inverse = temporary.elements.data;
+    for (size_t row = 0; row < n; ++row) {
+        for (size_t col = 0; col < n; ++col) {
+            inverse[row * n + col] = (double)augmented[row * width + n + col];
+        }
+    }
+    __matrix_replace(dst, &temporary);
+    vec_destroy(&work);
+    return true;
+}
+
 /* Gaussian elimination with partial pivoting. A singular matrix has det = 0. */
 static inline bool matrix_det(const struct matrix *matrix, double *result)
 {
