@@ -117,7 +117,8 @@ static bool test_vec_resize_capacity_and_swap(void)
     vec_swap(&vector, &other);
     CHECK(*(int *)vec_front(&vector) == 22);
     CHECK(*(int *)vec_front(&other) == 11);
-    CHECK(!vec_reserve(&vector, SIZE_MAX));
+    volatile size_t impossible_capacity = SIZE_MAX;
+    CHECK(!vec_reserve(&vector, impossible_capacity));
 
     vec_destroy(&vector);
     vec_destroy(&other);
@@ -353,6 +354,254 @@ static bool test_poly_list_arithmetic_and_alias(void)
     poly_list_destroy(&b);
     poly_list_destroy(&result);
     poly_list_destroy(&derivative);
+    return true;
+}
+
+static bool test_polynomial_integral(void)
+{
+    struct poly_vec vector, vector_result;
+    struct poly_list list, list_result;
+    poly_vec_init(&vector);
+    poly_vec_init(&vector_result);
+    poly_list_init(&list);
+    poly_list_init(&list_result);
+
+    CHECK(poly_vec_add_term(&vector, 6.0, 3));
+    CHECK(poly_vec_add_term(&vector, -4.0, 1));
+    CHECK(poly_vec_add_term(&vector, 2.0, 0));
+    CHECK(poly_vec_integral(&vector_result, &vector));
+    CHECK(vector_result.terms.size == 3);
+    CHECK(poly_vec_get_term(&vector_result, 4, &(double){ 0.0 }));
+    CHECK(poly_vec_at_const(&vector_result, 0)->coef == 1.5);
+    CHECK(poly_vec_at_const(&vector_result, 1)->coef == -2.0);
+    CHECK(poly_vec_at_const(&vector_result, 2)->coef == 2.0);
+    CHECK(poly_vec_integral(&vector_result, &vector_result));
+    CHECK(poly_vec_at_const(&vector_result, 0)->exp == 5);
+    CHECK(poly_vec_at_const(&vector_result, 0)->coef == 0.3);
+    CHECK(poly_vec_at_const(&vector_result, 1)->exp == 3);
+    CHECK(poly_vec_at_const(&vector_result, 1)->coef == -2.0 / 3.0);
+    CHECK(poly_vec_at_const(&vector_result, 2)->exp == 2);
+    CHECK(poly_vec_at_const(&vector_result, 2)->coef == 1.0);
+
+    CHECK(poly_list_add_term(&list, 6.0, 3));
+    CHECK(poly_list_add_term(&list, -4.0, 1));
+    CHECK(poly_list_add_term(&list, 2.0, 0));
+    CHECK(poly_list_integral(&list_result, &list));
+    double coefficient;
+    CHECK(poly_list_get_term(&list_result, 4, &coefficient));
+    CHECK(coefficient == 1.5);
+    CHECK(poly_list_get_term(&list_result, 2, &coefficient));
+    CHECK(coefficient == -2.0);
+    CHECK(poly_list_get_term(&list_result, 1, &coefficient));
+    CHECK(coefficient == 2.0);
+    CHECK(poly_list_integral(&list_result, &list_result));
+    CHECK(poly_list_get_term(&list_result, 5, &coefficient));
+    CHECK(coefficient == 0.3);
+    CHECK(poly_list_get_term(&list_result, 3, &coefficient));
+    CHECK(coefficient == -2.0 / 3.0);
+    CHECK(poly_list_get_term(&list_result, 2, &coefficient));
+    CHECK(coefficient == 1.0);
+
+    CHECK(poly_vec_set_term(&vector_result, 9.0, 0));
+    CHECK(poly_vec_set_term(&vector, 1.0, UINT_MAX));
+    CHECK(!poly_vec_integral(&vector_result, &vector));
+    CHECK(poly_vec_get_term(&vector_result, 0, &coefficient));
+    CHECK(coefficient == 9.0);
+    CHECK(poly_list_set_term(&list_result, 9.0, 0));
+    CHECK(poly_list_set_term(&list, 1.0, UINT_MAX));
+    CHECK(!poly_list_integral(&list_result, &list));
+    CHECK(poly_list_get_term(&list_result, 0, &coefficient));
+    CHECK(coefficient == 9.0);
+
+    poly_vec_destroy(&vector);
+    poly_vec_destroy(&vector_result);
+    poly_list_destroy(&list);
+    poly_list_destroy(&list_result);
+    return true;
+}
+
+static bool test_polynomial_integral_edges(void)
+{
+    struct poly_vec vector, vector_result;
+    struct poly_list list, list_result;
+    poly_vec_init(&vector);
+    poly_vec_init(&vector_result);
+    poly_list_init(&list);
+    poly_list_init(&list_result);
+
+    CHECK(poly_vec_add_term(&vector_result, 9.0, 0));
+    CHECK(poly_vec_integral(&vector_result, &vector));
+    CHECK(poly_vec_empty(&vector_result));
+    CHECK(poly_list_add_term(&list_result, 9.0, 0));
+    CHECK(poly_list_integral(&list_result, &list));
+    CHECK(poly_list_empty(&list_result));
+
+    CHECK(poly_vec_add_term(&vector, 7.0, 0));
+    CHECK(poly_vec_integral(&vector_result, &vector));
+    CHECK(vector_result.terms.size == 1);
+    CHECK(poly_vec_at_const(&vector_result, 0)->coef == 7.0);
+    CHECK(poly_vec_at_const(&vector_result, 0)->exp == 1);
+    CHECK(poly_list_add_term(&list, 7.0, 0));
+    CHECK(poly_list_integral(&list_result, &list));
+    double coefficient;
+    CHECK(poly_list_get_term(&list_result, 1, &coefficient));
+    CHECK(coefficient == 7.0);
+
+    CHECK(poly_vec_set_term(&vector, 1.0, 2));
+    CHECK(poly_vec_integral(&vector_result, &vector));
+    CHECK(fabs(poly_vec_at_const(&vector_result, 0)->coef - 1.0 / 3.0) < 1e-15);
+    CHECK(poly_vec_at_const(&vector_result, 0)->exp == 3);
+    CHECK(poly_vec_get_term(&vector, 2, &coefficient));
+    CHECK(coefficient == 1.0);
+    CHECK(poly_list_set_term(&list, 1.0, 2));
+    CHECK(poly_list_integral(&list_result, &list));
+    CHECK(poly_list_get_term(&list_result, 3, &coefficient));
+    CHECK(fabs(coefficient - 1.0 / 3.0) < 1e-15);
+    CHECK(poly_list_get_term(&list, 2, &coefficient));
+    CHECK(coefficient == 1.0);
+
+    CHECK(poly_vec_set_term(&vector_result, 8.0, 2));
+    CHECK(poly_vec_set_term(&vector_result, 9.0, 0));
+    CHECK(poly_vec_set_term(&vector, 1.0, UINT_MAX));
+    CHECK(!poly_vec_integral(&vector_result, &vector));
+    CHECK(poly_vec_get_term(&vector_result, 2, &coefficient));
+    CHECK(coefficient == 8.0);
+    CHECK(poly_vec_get_term(&vector_result, 0, &coefficient));
+    CHECK(coefficient == 9.0);
+
+    CHECK(poly_list_set_term(&list_result, 8.0, 2));
+    CHECK(poly_list_set_term(&list_result, 9.0, 0));
+    CHECK(poly_list_set_term(&list, 1.0, UINT_MAX));
+    CHECK(!poly_list_integral(&list_result, &list));
+    CHECK(poly_list_get_term(&list_result, 2, &coefficient));
+    CHECK(coefficient == 8.0);
+    CHECK(poly_list_get_term(&list_result, 0, &coefficient));
+    CHECK(coefficient == 9.0);
+
+    poly_vec_destroy(&vector);
+    poly_vec_destroy(&vector_result);
+    poly_list_destroy(&list);
+    poly_list_destroy(&list_result);
+    return true;
+}
+
+static bool test_vec_mutation_edges(void)
+{
+    struct vec vector;
+    vec_init(&vector, int);
+    int values[] = { 1, 2, 3 };
+    CHECK(vec_append(&vector, values, 3));
+
+    int *slot = vec_emplace_as(&vector, int, 1);
+    CHECK(slot != NULL);
+    *slot = 9;
+    slot = vec_emplace_back_as(&vector, int);
+    CHECK(slot != NULL);
+    *slot = 4;
+    int popped;
+    CHECK(vec_pop_back_copy(&vector, &popped));
+    CHECK(popped == 4);
+    CHECK(vec_erase_range(&vector, 1, 3) == (int *)vector.data + 1);
+    CHECK(vector.size == 2);
+    CHECK(*(int *)vec_at(&vector, 0) == 1);
+    CHECK(*(int *)vec_at(&vector, 1) == 3);
+    CHECK(vec_erase_range(&vector, 2, 1) == NULL);
+    vec_swap_erase(&vector, 0);
+    CHECK(vector.size == 1 && *(int *)vec_front(&vector) == 3);
+
+    vec_clear(&vector);
+    CHECK(vec_empty(&vector));
+    CHECK(vec_append(&vector, values, 3));
+    CHECK(vec_push_back(&vector, vec_at(&vector, 1)));
+    CHECK(vector.size == 4 && *(int *)vec_back(&vector) == 2);
+    CHECK(vec_assign_n(&vector, 3, vec_at(&vector, 1)));
+    CHECK(vector.size == 3);
+    for (size_t i = 0; i < vector.size; ++i) {
+        CHECK(*(int *)vec_at(&vector, i) == 2);
+    }
+    vec_destroy(&vector);
+    return true;
+}
+
+static bool test_list_replace_and_move(void)
+{
+    LIST_HEAD(head);
+    struct list_test_item first = { .value = 1 };
+    struct list_test_item second = { .value = 2 };
+    struct list_test_item third = { .value = 3 };
+    struct list_test_item replacement = { .value = 4 };
+    INIT_LIST_HEAD(&first.link);
+    INIT_LIST_HEAD(&second.link);
+    INIT_LIST_HEAD(&third.link);
+    INIT_LIST_HEAD(&replacement.link);
+    list_add_tail(&first.link, &head);
+    list_add_tail(&second.link, &head);
+    list_add_tail(&third.link, &head);
+
+    list_replace_init(&second.link, &replacement.link);
+    CHECK(list_entry(head.next, struct list_test_item, link)->value == 1);
+    CHECK(list_entry(head.next->next, struct list_test_item, link)->value == 4);
+    CHECK(second.link.next == &second.link && second.link.prev == &second.link);
+    list_move(&third.link, &head);
+    CHECK(list_entry(head.next, struct list_test_item, link)->value == 3);
+    list_move_tail(&first.link, &head);
+    CHECK(list_entry(head.prev, struct list_test_item, link)->value == 1);
+    CHECK(list_is_first(&third.link, &head));
+    CHECK(list_is_last(&first.link, &head));
+    list_del(&replacement.link);
+    CHECK(head.next->next == &first.link);
+    list_del(&third.link);
+    list_del(&first.link);
+    CHECK(list_empty(&head));
+    return true;
+}
+
+static bool test_polynomial_copy_and_derivative_edges(void)
+{
+    struct poly_vec vector, vector_copy, derivative;
+    struct poly_list list, list_copy, list_derivative;
+    poly_vec_init(&vector);
+    poly_vec_init(&vector_copy);
+    poly_vec_init(&derivative);
+    poly_list_init(&list);
+    poly_list_init(&list_copy);
+    poly_list_init(&list_derivative);
+    CHECK(poly_vec_add_term(&vector, 3.0, 2));
+    CHECK(poly_vec_add_term(&vector, 2.0, 1));
+    CHECK(poly_vec_add_term(&vector, 1.0, 0));
+    CHECK(poly_vec_copy(&vector_copy, &vector));
+    CHECK(poly_vec_equal(&vector, &vector_copy, 0.0));
+    CHECK(poly_vec_derivative(&derivative, &vector, 0));
+    CHECK(poly_vec_equal(&derivative, &vector, 0.0));
+    CHECK(poly_vec_derivative(&derivative, &vector, 1));
+    CHECK(derivative.terms.size == 2);
+    CHECK(poly_vec_at_const(&derivative, 0)->exp == 1);
+    CHECK(poly_vec_at_const(&derivative, 0)->coef == 6.0);
+    CHECK(poly_vec_at_const(&derivative, 1)->exp == 0);
+    CHECK(poly_vec_at_const(&derivative, 1)->coef == 2.0);
+    CHECK(poly_vec_derivative(&derivative, &vector, 3));
+    CHECK(poly_vec_empty(&derivative));
+
+    CHECK(poly_list_from_vec(&list, &vector));
+    CHECK(poly_list_copy(&list_copy, &list));
+    CHECK(poly_list_equal(&list, &list_copy, 0.0));
+    CHECK(poly_list_derivative(&list_derivative, &list, 0));
+    CHECK(poly_list_equal(&list_derivative, &list, 0.0));
+    CHECK(poly_list_derivative(&list_derivative, &list, 1));
+    double coefficient;
+    CHECK(poly_list_get_term(&list_derivative, 1, &coefficient));
+    CHECK(coefficient == 6.0);
+    CHECK(poly_list_get_term(&list_derivative, 0, &coefficient));
+    CHECK(coefficient == 2.0);
+    CHECK(poly_list_derivative(&list_derivative, &list, 3));
+    CHECK(poly_list_empty(&list_derivative));
+
+    poly_vec_destroy(&vector);
+    poly_vec_destroy(&vector_copy);
+    poly_vec_destroy(&derivative);
+    poly_list_destroy(&list);
+    poly_list_destroy(&list_copy);
+    poly_list_destroy(&list_derivative);
     return true;
 }
 
@@ -967,6 +1216,54 @@ static bool test_matrix_eigenvalues(void)
     return true;
 }
 
+static bool test_matrix_inverse(void)
+{
+    struct matrix matrix, inverse, product;
+    matrix_init(&matrix);
+    matrix_init(&inverse);
+    matrix_init(&product);
+
+    double data[] = { 4, 7, 2, 6 };
+    double expected[] = { 0.6, -0.7, -0.2, 0.4 };
+    double identity[] = { 1, 0, 0, 1 };
+    CHECK(matrix_assign(&matrix, 2, 2, data));
+    CHECK(matrix_inverse(&inverse, &matrix));
+    for (size_t i = 0; i < 4; ++i) {
+        CHECK(fabs(((double *)inverse.elements.data)[i] - expected[i]) < 1e-12);
+    }
+    CHECK(matrix_mul(&product, &matrix, &inverse));
+    for (size_t i = 0; i < 4; ++i) {
+        CHECK(fabs(((double *)product.elements.data)[i] - identity[i]) < 1e-12);
+    }
+    CHECK(matrix_inverse(&matrix, &matrix));
+    for (size_t i = 0; i < 4; ++i) {
+        CHECK(fabs(((double *)matrix.elements.data)[i] - expected[i]) < 1e-12);
+    }
+
+    double three_by_three[] = { 1, 2, 3, 0, 1, 4, 5, 6, 0 };
+    double three_inverse[] = { -24, 18, 5, 20, -15, -4, -5, 4, 1 };
+    CHECK(matrix_assign(&matrix, 3, 3, three_by_three));
+    CHECK(matrix_inverse(&inverse, &matrix));
+    for (size_t i = 0; i < 9; ++i) {
+        CHECK(fabs(((double *)inverse.elements.data)[i] - three_inverse[i]) < 1e-12);
+    }
+
+    double singular[] = { 1, 2, 2, 4 };
+    double retained[] = { 31, 32, 33, 34 };
+    CHECK(matrix_assign(&matrix, 2, 2, singular));
+    CHECK(matrix_assign(&inverse, 2, 2, retained));
+    CHECK(!matrix_inverse(&inverse, &matrix));
+    CHECK(memcmp(inverse.elements.data, retained, sizeof(retained)) == 0);
+    CHECK(matrix_assign(&matrix, 2, 3, three_by_three));
+    CHECK(!matrix_inverse(&inverse, &matrix));
+    CHECK(memcmp(inverse.elements.data, retained, sizeof(retained)) == 0);
+
+    matrix_destroy(&matrix);
+    matrix_destroy(&inverse);
+    matrix_destroy(&product);
+    return true;
+}
+
 static bool test_matrix_error_outputs(void)
 {
     struct matrix a, b, output, empty;
@@ -1062,7 +1359,14 @@ int main(void)
         { "matrix transpose", test_matrix_transpose },
         { "matrix determinant", test_matrix_determinant },
         { "matrix eigenvalues", test_matrix_eigenvalues },
+        { "matrix inverse", test_matrix_inverse },
         { "matrix error outputs", test_matrix_error_outputs },
+        { "polynomial integral", test_polynomial_integral },
+        { "polynomial integral edge cases", test_polynomial_integral_edges },
+        { "vec mutation edges", test_vec_mutation_edges },
+        { "list replace and move", test_list_replace_and_move },
+        { "polynomial copy and derivative edges",
+          test_polynomial_copy_and_derivative_edges },
     };
     size_t failures = 0;
 
