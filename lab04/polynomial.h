@@ -749,6 +749,52 @@ static inline bool poly_list_derivative(struct poly_list *dst,
     return true;
 }
 
+/* Indefinite integral with the constant term set to zero. */
+static inline bool poly_vec_integral(struct poly_vec *dst,
+                                     const struct poly_vec *src)
+{
+    struct poly_vec tmp;
+    poly_vec_init(&tmp);
+
+    for (size_t i = 0; i < src->terms.size; ++i) {
+        const struct poly_term *term =
+            vec_at_const(&src->terms, i);
+        if (term->exp == UINT_MAX ||
+            !poly_vec_add_term(&tmp, term->coef / (term->exp + 1.0),
+                               term->exp + 1)) {
+            poly_vec_destroy(&tmp);
+            return false;
+        }
+    }
+
+    __poly_vec_replace(dst, &tmp);
+    return true;
+}
+
+static inline bool poly_list_integral(struct poly_list *dst,
+                                      const struct poly_list *src)
+{
+    struct poly_list tmp;
+    poly_list_init(&tmp);
+
+    const struct list_head *pos = src->head.next;
+    while (pos != &src->head) {
+        const struct poly_node *node =
+            list_entry(pos, struct poly_node, link);
+        if (node->term.exp == UINT_MAX ||
+            !poly_list_add_term(&tmp,
+                                node->term.coef / (node->term.exp + 1.0),
+                                node->term.exp + 1)) {
+            poly_list_destroy(&tmp);
+            return false;
+        }
+        pos = pos->next;
+    }
+
+    __poly_list_replace(dst, &tmp);
+    return true;
+}
+
 
 /*
  * ============================================================

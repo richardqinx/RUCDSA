@@ -1013,6 +1013,7 @@ static void ui_draw_matrix(const struct ui_state *state, size_t selected)
         "转置矩阵",
         "计算行列式",
         "计算特征值",
+        "计算逆矩阵",
     };
 
     tui_clear();
@@ -1134,7 +1135,8 @@ static void ui_matrix_binary(struct ui_state *state, char operation)
 static void ui_matrix_unary(struct ui_state *state, int choice)
 {
     const char *title = choice == 5 ? "转置矩阵" :
-                        choice == 6 ? "计算行列式" : "计算特征值";
+                        choice == 6 ? "计算行列式" :
+                        choice == 7 ? "计算特征值" : "计算逆矩阵";
     size_t selected;
     if (!ui_read_size_value(title, "选择矩阵：1 = A，2 = B", &selected, state)) {
         return;
@@ -1149,7 +1151,7 @@ static void ui_matrix_unary(struct ui_state *state, int choice)
         return;
     }
     if (choice != 5 && matrix->rows != matrix->cols) {
-        ui_set_status(state, "错误：行列式和特征值计算要求方阵");
+        ui_set_status(state, "错误：行列式、特征值和求逆要求方阵");
         return;
     }
     bool success;
@@ -1163,14 +1165,19 @@ static void ui_matrix_unary(struct ui_state *state, int choice)
         success = matrix_det(matrix, &state->matrix_determinant);
         kind = UI_MATRIX_RESULT_DETERMINANT;
         break;
-    default:
+    case 7:
         success = matrix_eigenvalues(matrix, &state->matrix_eigenvalues);
         kind = UI_MATRIX_RESULT_EIGENVALUES;
+        break;
+    default:
+        success = matrix_inverse(&state->matrix_result, matrix);
+        kind = UI_MATRIX_RESULT_VALUE;
         break;
     }
     if (!success) {
         ui_set_status(state, choice == 7 ?
                       "错误：特征值计算失败（内存不足或迭代未收敛）" :
+                      choice == 8 ? "错误：矩阵不可逆或内存分配失败" :
                       "错误：结果尺寸过大或内存分配失败");
         return;
     }
@@ -1191,6 +1198,7 @@ static void ui_matrix_action(struct ui_state *state, int choice)
     case 5:
     case 6:
     case 7: ui_matrix_unary(state, choice); break;
+    case 8: ui_matrix_unary(state, choice); break;
     }
 }
 
@@ -1199,7 +1207,7 @@ static void ui_matrix_page(struct ui_state *state)
     size_t selected = 0;
     for (;;) {
         ui_draw_matrix(state, selected);
-        int choice = ui_menu_input(&selected, 8);
+        int choice = ui_menu_input(&selected, 9);
         if (choice == -1) return;
         if (choice >= 0) ui_matrix_action(state, choice);
     }
@@ -1214,6 +1222,7 @@ static void ui_draw_poly_vec(const struct ui_state *state, size_t selected)
         "A - B",
         "A × B",
         "多项式求导",
+        "多项式积分",
         "查看存储结构",
     };
 
@@ -1320,6 +1329,30 @@ static void ui_poly_vec_derivative(struct ui_state *state)
     ui_set_status(state, "已完成多项式求导");
 }
 
+static void ui_poly_vec_integral(struct ui_state *state)
+{
+    char input[128];
+    unsigned int which;
+    const struct poly_vec *source;
+
+    if (!ui_prompt_inline("多项式积分", "选择多项式（1=A，2=B）：",
+                          input, sizeof(input))) {
+        ui_set_status(state, "已取消");
+        return;
+    }
+    if (!ui_parse_unsigned(input, &which) || (which != 1 && which != 2)) {
+        ui_set_status(state, "错误：多项式选择无效");
+        return;
+    }
+    source = which == 1 ? &state->poly_vec_a : &state->poly_vec_b;
+    if (!poly_vec_integral(&state->poly_vec_result, source)) {
+        ui_set_status(state, "错误：多项式积分失败，指数可能超出范围");
+        return;
+    }
+    state->poly_vec_result_valid = true;
+    ui_set_status(state, "已完成多项式积分（积分常数为 0）");
+}
+
 static void ui_poly_vec_storage(const struct ui_state *state)
 {
     tui_clear();
@@ -1367,6 +1400,9 @@ static void ui_poly_vec_action(struct ui_state *state, int choice)
         ui_poly_vec_derivative(state);
         break;
     case 6:
+        ui_poly_vec_integral(state);
+        break;
+    case 7:
         ui_poly_vec_storage(state);
         break;
     default:
@@ -1380,7 +1416,7 @@ static void ui_poly_vec_page(struct ui_state *state)
 
     for (;;) {
         ui_draw_poly_vec(state, selected);
-        int choice = ui_menu_input(&selected, 7);
+        int choice = ui_menu_input(&selected, 8);
         if (choice == -1) {
             return;
         }
@@ -1399,6 +1435,7 @@ static void ui_draw_poly_list(const struct ui_state *state, size_t selected)
         "A - B",
         "A × B",
         "多项式求导",
+        "多项式积分",
         "查看链表结构",
     };
 
@@ -1505,6 +1542,30 @@ static void ui_poly_list_derivative(struct ui_state *state)
     ui_set_status(state, "已完成多项式求导");
 }
 
+static void ui_poly_list_integral(struct ui_state *state)
+{
+    char input[128];
+    unsigned int which;
+    const struct poly_list *source;
+
+    if (!ui_prompt_inline("多项式积分", "选择多项式（1=A，2=B）：",
+                          input, sizeof(input))) {
+        ui_set_status(state, "已取消");
+        return;
+    }
+    if (!ui_parse_unsigned(input, &which) || (which != 1 && which != 2)) {
+        ui_set_status(state, "错误：多项式选择无效");
+        return;
+    }
+    source = which == 1 ? &state->poly_list_a : &state->poly_list_b;
+    if (!poly_list_integral(&state->poly_list_result, source)) {
+        ui_set_status(state, "错误：多项式积分失败，指数可能超出范围");
+        return;
+    }
+    state->poly_list_result_valid = true;
+    ui_set_status(state, "已完成多项式积分（积分常数为 0）");
+}
+
 static void ui_poly_list_storage(const struct ui_state *state)
 {
     tui_clear();
@@ -1551,6 +1612,9 @@ static void ui_poly_list_action(struct ui_state *state, int choice)
         ui_poly_list_derivative(state);
         break;
     case 6:
+        ui_poly_list_integral(state);
+        break;
+    case 7:
         ui_poly_list_storage(state);
         break;
     default:
@@ -1564,7 +1628,7 @@ static void ui_poly_list_page(struct ui_state *state)
 
     for (;;) {
         ui_draw_poly_list(state, selected);
-        int choice = ui_menu_input(&selected, 7);
+        int choice = ui_menu_input(&selected, 8);
         if (choice == -1) {
             return;
         }
