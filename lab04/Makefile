@@ -16,7 +16,7 @@ test:
 $(TARGET): $(OBJECTS)
 	$(CC) $(CFLAGS) $(OBJECTS) $(LDLIBS) -o $@
 
-ui.o: matrix.h
+ui.o: matrix.h vector_math.h
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

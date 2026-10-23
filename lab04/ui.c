@@ -6,6 +6,7 @@
 #include "polynomial.h"
 #include "expression.h"
 #include "matrix.h"
+#include "vector_math.h"
 #include "tui.h"
 
 #include <ctype.h>
@@ -897,25 +898,17 @@ static void ui_vector_input(struct vec *destination,
 
 static void ui_vector_binary(struct ui_state *state, bool subtract)
 {
-    if (state->vector_a.size != state->vector_b.size) {
+    bool success = subtract ?
+        vector_sub(&state->vector_result, &state->vector_a, &state->vector_b) :
+        vector_add(&state->vector_result, &state->vector_a, &state->vector_b);
+    if (!success && state->vector_a.size != state->vector_b.size) {
         ui_set_status(state, "错误：两个向量维度不同");
         return;
     }
-
-    struct vec temporary;
-    vec_init(&temporary, double);
-    for (size_t i = 0; i < state->vector_a.size; ++i) {
-        double left = *(const double *)vec_at_const(&state->vector_a, i);
-        double right = *(const double *)vec_at_const(&state->vector_b, i);
-        double value = subtract ? left - right : left + right;
-        if (!vec_push_back(&temporary, &value)) {
-            vec_destroy(&temporary);
-            ui_set_status(state, "错误：内存分配失败");
-            return;
-        }
+    if (!success) {
+        ui_set_status(state, "错误：内存分配失败");
+        return;
     }
-    vec_swap(&state->vector_result, &temporary);
-    vec_destroy(&temporary);
     state->vector_result_kind = UI_VECTOR_RESULT_VALUE;
     ui_set_status(state, "已计算 A %c B", subtract ? '-' : '+');
 }
@@ -926,22 +919,11 @@ static void ui_vector_cosine(struct ui_state *state)
         ui_set_status(state, "错误：两个向量维度不同");
         return;
     }
-
-    double dot = 0.0;
-    double norm_a = 0.0;
-    double norm_b = 0.0;
-    for (size_t i = 0; i < state->vector_a.size; ++i) {
-        double left = *(const double *)vec_at_const(&state->vector_a, i);
-        double right = *(const double *)vec_at_const(&state->vector_b, i);
-        dot += left * right;
-        norm_a += left * left;
-        norm_b += right * right;
-    }
-    if (norm_a == 0.0 || norm_b == 0.0) {
+    if (!vector_cosine(&state->vector_a, &state->vector_b,
+                       &state->vector_cosine)) {
         ui_set_status(state, "错误：零向量无法计算夹角余弦");
         return;
     }
-    state->vector_cosine = dot / (sqrt(norm_a) * sqrt(norm_b));
     state->vector_result_kind = UI_VECTOR_RESULT_COSINE;
     ui_set_status(state, "已计算夹角余弦");
 }

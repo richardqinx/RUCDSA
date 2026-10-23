@@ -7,6 +7,7 @@
 #include "matrix.h"
 #include "polynomial.h"
 #include "vec.h"
+#include "vector_math.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -520,6 +521,56 @@ static bool test_vec_mutation_edges(void)
         CHECK(*(int *)vec_at(&vector, i) == 2);
     }
     vec_destroy(&vector);
+    return true;
+}
+
+static bool test_vector_math(void)
+{
+    struct vec a, b, result;
+    vec_init(&a, double);
+    vec_init(&b, double);
+    vec_init(&result, double);
+    double left[] = { 1.0, 2.0, 3.0 };
+    double right[] = { 4.0, 5.0, 6.0 };
+    CHECK(vec_append(&a, left, 3));
+    CHECK(vec_append(&b, right, 3));
+    CHECK(vector_add(&result, &a, &b));
+    CHECK(result.size == 3);
+    CHECK(((double *)result.data)[0] == 5.0);
+    CHECK(((double *)result.data)[1] == 7.0);
+    CHECK(((double *)result.data)[2] == 9.0);
+    CHECK(vector_sub(&result, &a, &b));
+    CHECK(((double *)result.data)[0] == -3.0);
+    CHECK(((double *)result.data)[1] == -3.0);
+    CHECK(((double *)result.data)[2] == -3.0);
+    double cosine = 0.0;
+    CHECK(vector_cosine(&a, &b, &cosine));
+    CHECK(fabs(cosine - 0.9746318461970762) < 1e-12);
+
+    CHECK(vector_add(&a, &a, &b));
+    CHECK(((double *)a.data)[0] == 5.0);
+    CHECK(((double *)a.data)[2] == 9.0);
+    CHECK(vector_sub(&b, &a, &b));
+    CHECK(((double *)b.data)[0] == 1.0);
+    CHECK(((double *)b.data)[2] == 3.0);
+
+    double sentinel[] = { 8.0, 9.0 };
+    CHECK(vec_append(&result, sentinel, 2));
+    struct vec short_vector;
+    vec_init(&short_vector, double);
+    CHECK(vec_append(&short_vector, sentinel, 2));
+    CHECK(!vector_add(&result, &a, &short_vector));
+    CHECK(result.size == 5);
+    CHECK(((double *)result.data)[3] == 8.0);
+    CHECK(((double *)result.data)[4] == 9.0);
+    struct vec zero;
+    vec_init(&zero, double);
+    CHECK(!vector_cosine(&zero, &zero, &cosine));
+    vec_destroy(&zero);
+    vec_destroy(&short_vector);
+    vec_destroy(&a);
+    vec_destroy(&b);
+    vec_destroy(&result);
     return true;
 }
 
@@ -1364,6 +1415,7 @@ int main(void)
         { "polynomial integral", test_polynomial_integral },
         { "polynomial integral edge cases", test_polynomial_integral_edges },
         { "vec mutation edges", test_vec_mutation_edges },
+        { "vector math", test_vector_math },
         { "list replace and move", test_list_replace_and_move },
         { "polynomial copy and derivative edges",
           test_polynomial_copy_and_derivative_edges },

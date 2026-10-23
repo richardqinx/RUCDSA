@@ -8,7 +8,7 @@ TARGET := test_runner
 
 all: $(TARGET)
 
-$(TARGET): test.c ../container_of.h ../list.h ../vec.h ../polynomial.h ../expression.h ../stack.h ../matrix.h
+$(TARGET): test.c ../container_of.h ../list.h ../vec.h ../polynomial.h ../expression.h ../stack.h ../matrix.h ../vector_math.h
 	$(CC) $(CFLAGS) -I.. test.c $(LDLIBS) -o $@
 
 run: $(TARGET)
